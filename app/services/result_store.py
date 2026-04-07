@@ -35,15 +35,7 @@ class ExperimentResultStore:
             if not record.summary_path:
                 continue
             payload = self._read_json(record.summary_path)
-            items.append(
-                {
-                    "experiment_key": record.experiment_key,
-                    "file_name": record.file_name,
-                    "relative_path": record.relative_path,
-                    "has_result": record.result_path is not None,
-                    "summary": payload,
-                }
-            )
+            items.append(self._build_summary_list_item(record, payload))
         return items
 
     def get_summary(self, experiment_key: str) -> Dict[str, Any]:
@@ -146,6 +138,28 @@ class ExperimentResultStore:
 
     def _build_experiment_key(self, relative_base: Path) -> str:
         return "__".join(relative_base.parts)
+
+    def _build_summary_list_item(
+        self,
+        record: ExperimentFileRecord,
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return {
+            "experiment_key": record.experiment_key,
+            "file_name": record.file_name,
+            "relative_path": record.relative_path,
+            "experiment_id": payload.get("experiment_id"),
+            "model": payload.get("model"),
+            "dataset": payload.get("dataset"),
+            "experiment_mode": payload.get("experiment_mode"),
+            "scenario_tags": list(payload.get("scenario_tags", [])),
+            "active_attacks": list(payload.get("active_attacks", [])),
+            "active_defenses": list(payload.get("active_defenses", [])),
+            "active_privacy_metrics": list(
+                payload.get("active_privacy_metrics", [])
+            ),
+            "final_eval": payload.get("final_eval", {}) or {},
+        }
 
 
 @lru_cache(maxsize=1)
