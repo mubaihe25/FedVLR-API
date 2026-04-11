@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -11,6 +12,9 @@ from app.core.settings import get_settings
 
 SUMMARY_SUFFIX = ".experiment_summary.json"
 RESULT_SUFFIX = ".experiment_result.json"
+SHOWCASE_V1_COMPARISON_PATH = (
+    Path("FedRAP") / "KU" / "ShowcaseV1" / "showcase_v1_comparison.json"
+)
 
 
 @dataclass
@@ -62,6 +66,36 @@ class ExperimentResultStore:
             "file_name": record.file_name,
             "relative_path": record.relative_path,
             "result": self._read_json(record.result_path),
+        }
+
+    def get_showcase_v1_comparison(self) -> Dict[str, Any]:
+        file_path = self.results_dir / SHOWCASE_V1_COMPARISON_PATH
+        payload = self._read_json(file_path)
+        records = payload.get("records", [])
+        if not isinstance(records, list):
+            raise ValueError(f"Expected records list in file: {file_path}")
+
+        metadata = {
+            "model": payload.get("model"),
+            "dataset": payload.get("dataset"),
+            "type": payload.get("type"),
+            "comment_prefix": payload.get("comment_prefix"),
+            "generated_at": payload.get("generated_at"),
+            "output_dir": payload.get("output_dir"),
+        }
+
+        updated_at = datetime.fromtimestamp(
+            file_path.stat().st_mtime,
+            tz=timezone.utc,
+        ).isoformat()
+
+        return {
+            "source": SHOWCASE_V1_COMPARISON_PATH.as_posix(),
+            "comparison_type": "showcase_v1",
+            "updated_at": updated_at,
+            "item_count": len(records),
+            "metadata": metadata,
+            "items": records,
         }
 
     def _get_record(self, experiment_key: str) -> ExperimentFileRecord:

@@ -42,3 +42,12 @@ class ExperimentResultResponse(BaseModel):
     file_name: str
     relative_path: str
     result: Dict[str, Any]
+
+
+class ShowcaseComparisonResponse(BaseModel):
+    source: str
+    comparison_type: str
+    updated_at: str | None = None
+    item_count: int
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    items: List[Dict[str, Any]] = Field(default_factory=list)
