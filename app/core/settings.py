@@ -37,7 +37,7 @@ def get_settings() -> Settings:
         results_dir = (fedvlr_root / "outputs" / "results").resolve()
 
     return Settings(
-        app_name="FedVLR Read-Only API",
+        app_name="FedVLR API",
         api_root=api_root,
         fedvlr_root=fedvlr_root,
         results_dir=results_dir,

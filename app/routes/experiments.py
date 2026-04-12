@@ -1,10 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Any, Dict
+
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from app.models.schemas import (
     ExperimentResultResponse,
     ExperimentSummaryListResponse,
     ExperimentSummaryResponse,
+    LaunchExperimentResponse,
 )
+from app.services.launcher_service import LauncherService, get_launcher_service
 from app.services.result_store import ExperimentResultStore, get_result_store
 
 
@@ -43,3 +47,31 @@ def get_experiment_result(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/launch", response_model=LaunchExperimentResponse)
+def launch_experiment(
+    payload: Dict[str, Any] = Body(...),
+    validate_only: bool = Query(False),
+    dry_run: bool = Query(False),
+    strict_validation: bool = Query(False),
+    launcher: LauncherService = Depends(get_launcher_service),
+) -> LaunchExperimentResponse:
+    if isinstance(payload.get("config"), dict):
+        config = payload["config"]
+    else:
+        config = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"validate_only", "dry_run", "strict_validation"}
+        }
+    body_validate_only = bool(payload.get("validate_only", False))
+    body_dry_run = bool(payload.get("dry_run", False))
+    body_strict_validation = bool(payload.get("strict_validation", False))
+    result = launcher.launch(
+        unified_config=config,
+        validate_only=validate_only or body_validate_only,
+        dry_run=dry_run or body_dry_run,
+        strict_validation=strict_validation or body_strict_validation,
+    )
+    return LaunchExperimentResponse(**result)
