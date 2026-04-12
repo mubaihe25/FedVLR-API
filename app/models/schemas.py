@@ -79,9 +79,15 @@ class LaunchExperimentRequest(BaseModel):
 
 
 class LaunchExperimentResponse(BaseModel):
+    launch_id: str | None = None
     accepted: bool
     success: bool
+    status: str | None = None
     launch_mode: str
+    submitted_at: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
+    pid: int | None = None
     command: List[str] = Field(default_factory=list)
     return_code: int | None = None
     experiment_id: str | None = None
@@ -94,3 +100,11 @@ class LaunchExperimentResponse(BaseModel):
     stdout_tail: str | None = None
     stderr_tail: str | None = None
     launcher_payload: Dict[str, Any] = Field(default_factory=dict)
+    config_summary: Dict[str, Any] = Field(default_factory=dict)
+    validate_only: bool = False
+    dry_run: bool = False
+    strict_validation: bool = False
+
+
+class LaunchStatusResponse(LaunchExperimentResponse):
+    pass

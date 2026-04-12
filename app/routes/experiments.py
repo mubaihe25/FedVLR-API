@@ -7,12 +7,24 @@ from app.models.schemas import (
     ExperimentSummaryListResponse,
     ExperimentSummaryResponse,
     LaunchExperimentResponse,
+    LaunchStatusResponse,
 )
 from app.services.launcher_service import LauncherService, get_launcher_service
 from app.services.result_store import ExperimentResultStore, get_result_store
 
 
 router = APIRouter(prefix="/experiments", tags=["experiments"])
+
+
+@router.get("/launch/{launch_id}", response_model=LaunchStatusResponse)
+def get_launch_status(
+    launch_id: str,
+    launcher: LauncherService = Depends(get_launcher_service),
+) -> LaunchStatusResponse:
+    record = launcher.get_status(launch_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Launch record not found: {launch_id}")
+    return LaunchStatusResponse(**record)
 
 
 @router.get("/summaries", response_model=ExperimentSummaryListResponse)
