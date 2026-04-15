@@ -111,3 +111,5 @@ data/
 # Optional: generated docs / local artifacts
 # =========================
 site/
+__pycache__/
+*.pyc
