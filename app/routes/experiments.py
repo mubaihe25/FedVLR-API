@@ -1,6 +1,7 @@
 from typing import Any, Dict
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 
 from app.models.schemas import (
     ExperimentResultResponse,
@@ -59,6 +60,23 @@ def get_experiment_result(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/{experiment_key}/csv")
+def download_experiment_csv(
+    experiment_key: str,
+    store: ExperimentResultStore = Depends(get_result_store),
+) -> FileResponse:
+    try:
+        csv_path = store.get_csv_path(experiment_key)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return FileResponse(
+        path=csv_path,
+        media_type="text/csv",
+        filename=csv_path.name,
+    )
 
 
 @router.post("/launch", response_model=LaunchExperimentResponse)

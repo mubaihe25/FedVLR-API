@@ -68,6 +68,15 @@ class ExperimentResultStore:
             "result": self._read_json(record.result_path),
         }
 
+    def get_csv_path(self, experiment_key: str) -> Path:
+        record = self._get_record(experiment_key)
+        csv_path = self.results_dir / Path(f"{record.relative_path}.csv")
+        if not csv_path.exists() or not csv_path.is_file():
+            raise FileNotFoundError(
+                f"CSV file not found for experiment_key='{experiment_key}'"
+            )
+        return csv_path
+
     def get_showcase_v1_comparison(self) -> Dict[str, Any]:
         file_path = self.results_dir / SHOWCASE_V1_COMPARISON_PATH
         payload = self._read_json(file_path)
