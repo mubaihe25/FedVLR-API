@@ -1,47 +1,57 @@
 # FedVLR-API
 
-`FedVLR-API` 当前是一个最小只读接口层，用来包装 `FedVLR` 训练主仓已经落盘的实验结果文件。
+`FedVLR-API` is the backend service for the FedVLR competition demo. It connects the frontend training console with the `FedVLR` algorithm repository, provides experiment launch and status polling, and exposes historical experiment outputs for analysis pages.
 
-当前阶段只提供：
+## Current Responsibilities
 
-- 健康检查
-- 实验摘要列表
-- 单个实验摘要读取
-- 单个实验详细结果读取
+- health check;
+- capability matrix and unified experiment schema access;
+- experiment launch through `FedVLR/scripts/launch_experiment.py`;
+- validate-only and dry-run checks without starting training;
+- asynchronous launch status polling;
+- historical result scanning from `FedVLR/outputs/results`;
+- single-experiment summary, result, and CSV download;
+- showcase comparison data for demo pages.
 
-不提供：
+This service is not a production task platform. The launch registry is stored in process memory, so service restart loses launch status records. There is currently no database, authentication system, production queue, or durable task scheduler.
 
-- 训练启动
-- 训练停止
-- 结果写操作
-- 数据库
-- 鉴权
-
-## 目录结构
+## Repository Layout
 
 ```text
 app/
-├─ core/
-│  └─ settings.py
-├─ models/
-│  └─ schemas.py
-├─ routes/
-│  ├─ experiments.py
-│  └─ health.py
-├─ services/
-│  └─ result_store.py
-└─ main.py
+  core/
+    settings.py          environment and path resolution
+  models/
+    schemas.py           request/response models
+  routes/
+    capabilities.py      capability matrix and experiment schema endpoints
+    experiments.py       launch, status, summary, result, csv endpoints
+    health.py            health endpoint
+    showcase.py          showcase comparison endpoint
+  services/
+    capability_store.py  reads FedVLR capability/schema files
+    launcher_service.py  writes temp configs and starts FedVLR subprocesses
+    launch_registry.py   in-memory launch records
+    result_store.py      scans FedVLR output JSON/CSV files
+  main.py                FastAPI app
 ```
 
-## 环境变量
+## Environment Variables
 
-优先级：
+- `FEDVLR_ROOT`: optional path to the `FedVLR` repository. Defaults to `../FedVLR` relative to this repository.
+- `FEDVLR_RESULTS_DIR`: optional path to the results directory. Defaults to `<FEDVLR_ROOT>/outputs/results`.
+- `FEDVLR_PYTHON`: optional Python executable used to run FedVLR launcher. If not set, the service tries `FedVLR/.venv/Scripts/python.exe` on Windows and then falls back to the current Python executable.
+- `FEDVLR_LAUNCH_TIMEOUT_SECONDS`: optional timeout for validate-only/dry-run subprocess calls.
 
-1. `FEDVLR_RESULTS_DIR`
-2. `FEDVLR_ROOT`
-3. 默认按工作区兄弟目录推断 `../FedVLR/outputs/results`
+Example `.env` content:
 
-## 安装与启动
+```text
+FEDVLR_ROOT=../FedVLR
+# FEDVLR_RESULTS_DIR=../FedVLR/outputs/results
+# FEDVLR_PYTHON=../FedVLR/.venv/Scripts/python.exe
+```
+
+## Install and Run
 
 ```powershell
 cd FedVLR-API
@@ -51,32 +61,51 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-## 接口
+The API defaults to `http://127.0.0.1:8000`.
+
+## Endpoints
 
 - `GET /health`
-- `GET /experiments/summaries`
-- `GET /experiments/{experiment_key}/summary`
-- `GET /experiments/{experiment_key}/result`
-- `GET /showcase/comparison`
 - `GET /capabilities`
 - `GET /experiment-schema`
 - `POST /experiments/launch`
+- `GET /experiments/launch/{launch_id}`
+- `GET /experiments/summaries`
+- `GET /experiments/{experiment_key}/summary`
+- `GET /experiments/{experiment_key}/result`
+- `GET /experiments/{experiment_key}/csv`
+- `GET /showcase/comparison`
 
-说明：
+## Experiment Launch
 
-- `experiment_key` 是基于结果文件相对路径生成的稳定只读键
-- 列表接口会返回 `experiment_key`、`file_name`、`relative_path`
-- 前端后续可先用 `experiment_key` 作为详情读取主键
+`POST /experiments/launch` accepts either:
 
-## 能力矩阵与实验启动
+- `{ "config": { ... }, "validate_only": true }`
+- a bare unified experiment config object.
 
-- `GET /capabilities` 读取 `FedVLR/configs/model_attack_defense_capabilities.json`，用于前端展示模型、攻击、防御、观测模块与已验证组合。
-- `GET /experiment-schema` 读取 `FedVLR/configs/experiment_config_schema.json`，用于前端生成统一实验配置表单。
-- `POST /experiments/launch` 接收统一实验配置 JSON，并通过子进程调用 `FedVLR/scripts/launch_experiment.py`。
+The config is passed to `FedVLR/scripts/launch_experiment.py` through a temporary JSON file.
 
-`POST /experiments/launch` 支持两种轻量模式：
+Use `validate_only: true` or `dry_run: true` to validate mapping and capabilities without starting training. Use `strict_validation: true` only when unvalidated combinations should become hard errors.
 
-- query/body 中传入 `validate_only: true` 或 `dry_run: true` 时，只做配置校验和映射，不启动训练。
-- query/body 中传入 `strict_validation: true` 时，未验证组合会被 launcher 视为错误。
+## Result Scanning
 
-该接口当前是同步最小入口，不包含数据库、任务队列、鉴权或训练任务轮询系统。
+Historical results are read from files ending with:
+
+- `.experiment_summary.json`
+- `.experiment_result.json`
+
+`experiment_key` is derived from the relative result path and is used by the frontend as a stable read key. Do not change this rule without coordinating frontend changes.
+
+CSV download is resolved by replacing the known JSON suffix with `.csv` under the same relative result path.
+
+## Security Capability Boundary
+
+The current backend exposes capabilities implemented by `FedVLR`: poisoning attacks, robust defenses, and risk observation. Differential privacy, homomorphic encryption, and secure aggregation are not formal implemented capabilities in the current training chain and should only be described as future extensions.
+
+## Lightweight Validation
+
+After Python code changes, run:
+
+```powershell
+python -m compileall -q app
+```
