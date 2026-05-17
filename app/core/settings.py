@@ -12,6 +12,7 @@ class Settings:
     api_root: Path
     fedvlr_root: Path
     results_dir: Path
+    showcase_artifact_root: Path
 
 
 @lru_cache(maxsize=1)
@@ -21,6 +22,7 @@ def get_settings() -> Settings:
 
     fedvlr_root_env = os.getenv("FEDVLR_ROOT")
     fedvlr_results_env = os.getenv("FEDVLR_RESULTS_DIR")
+    showcase_artifact_root_env = os.getenv("SHOWCASE_ARTIFACT_ROOT")
 
     if fedvlr_root_env:
         fedvlr_root = Path(fedvlr_root_env).expanduser()
@@ -36,9 +38,19 @@ def get_settings() -> Settings:
     else:
         results_dir = (fedvlr_root / "outputs" / "results").resolve()
 
+    if showcase_artifact_root_env:
+        showcase_artifact_root = Path(showcase_artifact_root_env).expanduser()
+        if not showcase_artifact_root.is_absolute():
+            showcase_artifact_root = (api_root / showcase_artifact_root).resolve()
+    else:
+        showcase_artifact_root = (
+            fedvlr_root / "outputs" / "showcase_artifacts"
+        ).resolve()
+
     return Settings(
         app_name="FedVLR API",
         api_root=api_root,
         fedvlr_root=fedvlr_root,
         results_dir=results_dir,
+        showcase_artifact_root=showcase_artifact_root,
     )

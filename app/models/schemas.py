@@ -53,6 +53,57 @@ class ShowcaseComparisonResponse(BaseModel):
     items: List[Dict[str, Any]] = Field(default_factory=list)
 
 
+class ShowcaseWarning(BaseModel):
+    code: str
+    message: str
+    file: str | None = None
+
+
+class ShowcaseScenarioItem(BaseModel):
+    id: str
+    name: str | None = None
+    path: str
+    available_files: List[str] = Field(default_factory=list)
+    dataset: str | None = None
+    model: str | None = None
+    description: str | None = None
+    tags: List[str] = Field(default_factory=list)
+    warnings: List[ShowcaseWarning] = Field(default_factory=list)
+
+
+class ShowcaseScenarioListResponse(BaseModel):
+    count: int
+    items: List[ShowcaseScenarioItem] = Field(default_factory=list)
+    warnings: List[ShowcaseWarning] = Field(default_factory=list)
+
+
+class ShowcaseArtifactResponse(BaseModel):
+    scenario_id: str
+    artifact: str
+    file: str
+    data: Any | None = None
+    warnings: List[ShowcaseWarning] = Field(default_factory=list)
+
+
+class ShowcaseSecurityResponse(BaseModel):
+    scenario_id: str
+    attack_defense_summary: Any | None = None
+    defense_trace: Any | None = None
+    warnings: List[ShowcaseWarning] = Field(default_factory=list)
+
+
+class ShowcaseReportResponse(BaseModel):
+    scenario_id: str
+    manifest: Any | None = None
+    dataset_profile: Any | None = None
+    metrics_summary: Any | None = None
+    attack_defense_summary: Any | None = None
+    recommendation_comparison: Any | None = None
+    defense_trace: Any | None = None
+    privacy_risk_summary: Any | None = None
+    warnings: List[ShowcaseWarning] = Field(default_factory=list)
+
+
 class CapabilitiesResponse(BaseModel):
     source: str
     updated_at: str | None = None
