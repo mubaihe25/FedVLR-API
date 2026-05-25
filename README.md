@@ -87,6 +87,7 @@ The API defaults to `http://127.0.0.1:8000`.
 - `GET /showcase/scenarios/{scenario_id}/security`
 - `GET /showcase/scenarios/{scenario_id}/privacy`
 - `GET /showcase/scenarios/{scenario_id}/report`
+- `GET /showcase/images/{dataset}/{item_id}`
 
 ## Experiment Launch
 
@@ -117,6 +118,28 @@ Showcase artifacts are read from `<SHOWCASE_ARTIFACT_ROOT>` when set, otherwise 
 The artifact APIs are read-only. They do not modify artifacts, start training, or delete outputs. Missing files in aggregate responses are returned as `null` with structured warnings. Single-file artifact endpoints return `404` when the requested file is absent. Invalid JSON is returned as `data: null` plus a warning instead of a server error.
 
 Scenario list responses expose a public relative `path`, not the local absolute filesystem path.
+
+The showcase scanner also supports `model_security_capability_matrix` scenarios
+exported under `outputs/showcase_artifacts/model_security_capability_matrix`.
+The aggregate report can include:
+
+- `model_security_capability_matrix`
+- `supported_demos`
+- `unsupported_reasons`
+- `recommended_frontend_labels`
+
+For large recommendation artifacts, `/showcase/scenarios/{scenario_id}/report`
+returns a preview-limited `recommendation_comparison` with `preview_limit` and
+`total_counts`; use `/showcase/scenarios/{scenario_id}/recommendations` when a
+full recommendation artifact is required.
+
+`GET /showcase/images/{dataset}/{item_id}` serves local Amazon Beauty cached
+images only when the image is registered in
+`FedVLR/datasets/AMAZON_BEAUTY_POC/item_image_manifest.json`. The endpoint
+guards path segments, returns `404` for unregistered or missing files, and does
+not expose local absolute paths. Recommendation and target-rank artifacts may
+include `local_image_url` values that point to this endpoint when a registered
+local image exists.
 
 ## Security Capability Boundary
 

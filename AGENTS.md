@@ -2,13 +2,13 @@
 
 ## 仓库定位
 
-`FedVLR-API` 是后端服务仓库，负责接收前端实验配置、生成临时配置、启动 `FedVLR` 子进程、轮询启动状态、扫描历史结果和 showcase artifacts，并向前端提供 summary/result/csv/showcase 读取接口。
+`FedVLR-API` 是后端服务仓库，负责接收前端实验配置、生成临时配置、启动 `FedVLR` 子进程、轮询启动状态、扫描历史结果和只读读取 showcase artifacts，并向前端提供 summary/result/csv/showcase 接口。
 
 ## 重点目录
 
-- `app/routes`：FastAPI 路由，包括健康检查、capabilities/schema、实验启动、历史结果和 showcase。
-- `app/services`：能力矩阵读取、结果扫描、showcase artifacts 只读扫描、启动器服务和内存态 launch registry。
-- `app/models`：API 响应和请求 schema。
+- `app/routes`：FastAPI 路由，包括 health、capabilities/schema、实验启动、历史结果和 showcase。
+- `app/services`：能力矩阵读取、结果扫描、showcase artifacts 只读扫描、启动器服务和内存 launch registry。
+- `app/models`：API 请求/响应 schema。
 - `app/core`：环境变量和路径配置。
 - `requirements.txt`：后端运行依赖。
 
@@ -20,9 +20,16 @@
 - showcase artifact API 只读读取 `<FEDVLR_ROOT>/outputs/showcase_artifacts` 或 `SHOWCASE_ARTIFACT_ROOT`；不要修改 artifacts、不要运行训练、不要删除 outputs。
 - showcase artifact 响应不要暴露本地绝对路径；scenario `path` 保持为面向前端的相对路径。
 - artifact 聚合接口缺失文件应返回 `null` 和结构化 warning；单文件 artifact 缺失才返回 404。
-- `launch registry` 当前是进程内存态，服务重启会丢失状态；不要误写成生产级持久任务队列。
+- `launch registry` 当前是进程内内存态，服务重启会丢失状态；不要写成生产级持久任务队列。
 - 当前 API 不包含数据库、鉴权、生产级任务队列或真实 stop 控制；如需新增，需要单独设计。
 - 不要把差分隐私、同态加密、安全聚合写成已正式实现。
+
+## Showcase Notes
+
+- `showcase_store.py` 读取标准 showcase artifacts，也读取 `model_security_capability_matrix` 目录中的 `model_security_capability_matrix.json`、`supported_demos.json`、`unsupported_reasons.json` 和 `recommended_frontend_labels.json`。
+- `/showcase/images/{dataset}/{item_id}` 只能返回 `FedVLR/datasets/AMAZON_BEAUTY_POC/item_image_manifest.json` 登记过的图片；必须保留路径穿越检查，未登记或文件缺失返回 404。
+- 推荐项或 target-rank 行如果存在 manifest 登记图片，可以补 `local_image_url`，但不能暴露 D 盘等本地绝对路径。
+- `/showcase/scenarios/{scenario_id}/report` 对大型 `recommendation_comparison` 使用 preview rows 加 `total_counts`，保持前端展示可用；完整 artifact 仍由 `/showcase/scenarios/{scenario_id}/recommendations` 读取。
 
 ## 验证建议
 

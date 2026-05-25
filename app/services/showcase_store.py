@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence
+from urllib.parse import quote
 
 from app.core.settings import get_settings
 
@@ -59,9 +60,28 @@ ARTIFACT_SPECS: Dict[str, ArtifactSpec] = {
         response_key="privacy_risk_summary",
         file_name="privacy_risk_summary.json",
     ),
+    "model_security_capability_matrix": ArtifactSpec(
+        key="model_security_capability_matrix",
+        response_key="model_security_capability_matrix",
+        file_name="model_security_capability_matrix.json",
+    ),
+    "supported_demos": ArtifactSpec(
+        key="supported_demos",
+        response_key="supported_demos",
+        file_name="supported_demos.json",
+    ),
+    "unsupported_reasons": ArtifactSpec(
+        key="unsupported_reasons",
+        response_key="unsupported_reasons",
+        file_name="unsupported_reasons.json",
+    ),
+    "recommended_frontend_labels": ArtifactSpec(
+        key="recommended_frontend_labels",
+        response_key="recommended_frontend_labels",
+        file_name="recommended_frontend_labels.json",
+    ),
 }
 
-EXPECTED_ARTIFACT_FILES = tuple(spec.file_name for spec in ARTIFACT_SPECS.values())
 REPORT_ARTIFACT_KEYS = (
     "manifest",
     "dataset_profile",
@@ -72,31 +92,56 @@ REPORT_ARTIFACT_KEYS = (
     "privacy_risk_summary",
 )
 SECURITY_ARTIFACT_KEYS = ("attack_defense_summary", "defense_trace")
+MATRIX_ARTIFACT_KEYS = (
+    "model_security_capability_matrix",
+    "supported_demos",
+    "unsupported_reasons",
+    "recommended_frontend_labels",
+)
+STANDARD_EXPECTED_ARTIFACT_FILES = tuple(
+    ARTIFACT_SPECS[key].file_name for key in REPORT_ARTIFACT_KEYS
+)
+MATRIX_EXPECTED_ARTIFACT_FILES = (
+    ARTIFACT_SPECS["manifest"].file_name,
+    *(ARTIFACT_SPECS[key].file_name for key in MATRIX_ARTIFACT_KEYS),
+)
 
 FRIENDLY_SCENARIOS: Dict[str, Dict[str, Any]] = {
     "mmfedrap_ku_main_showcase": {
-        "name": "KU 多模态联邦推荐攻防主结果",
+        "name": "KU MMFedRAP attack-defense main result",
         "tags": ["KU", "MMFedRAP", "AttackDefense"],
     },
     "mmfedrap_ku_attack_defense_demo": {
-        "name": "KU 多模态联邦推荐攻防主结果",
+        "name": "KU MMFedRAP attack-defense main result",
         "tags": ["KU", "MMFedRAP", "AttackDefense"],
     },
     "amazon_beauty_poc_security_smoke": {
-        "name": "Amazon Beauty 商品推荐安全分析",
+        "name": "Amazon Beauty product security smoke",
         "tags": ["Amazon", "Product", "SecuritySmoke"],
     },
     "amazon_beauty_poc_target_injection_strong_smoke": {
-        "name": "Amazon Beauty 目标注入排序推进",
+        "name": "Amazon Beauty target injection rank shift",
         "tags": ["Amazon", "TargetInjection", "RankShift"],
     },
     "amazon_beauty_poc_target_rank_comparison_smoke": {
-        "name": "Amazon Beauty 目标排序对照",
+        "name": "Amazon Beauty target rank comparison",
         "tags": ["Amazon", "TargetRank"],
     },
+    "amazon_beauty_poc_v25_backend_smoke": {
+        "name": "Amazon Beauty V2.5 backend smoke",
+        "dataset": "AMAZON_BEAUTY_POC",
+        "model": "FedAvg",
+        "tags": ["Amazon", "V2.5", "TargetRank", "PrivacySmoke"],
+    },
     "security_matrix_krum_demo": {
-        "name": "鲁棒聚合 Krum 链路验证",
+        "name": "Robust aggregation Krum chain",
         "tags": ["RobustAggregation", "Krum"],
+    },
+    "model_security_capability_matrix": {
+        "name": "模型安全能力矩阵",
+        "dataset": "AMAZON_BEAUTY_POC / KU",
+        "model": "FedAvg / MMFedRAP / FedRAP / MMFedAvg",
+        "tags": ["ModelMatrix", "SecurityCapability", "FrontendLabels"],
     },
 }
 
@@ -104,9 +149,16 @@ FRIENDLY_SCENARIOS: Dict[str, Dict[str, Any]] = {
 class ShowcaseArtifactStore:
     """Read-only wrapper around exported FedVLR showcase artifacts."""
 
-    def __init__(self, fedvlr_root: Path, artifact_root: Path) -> None:
+    def __init__(
+        self,
+        fedvlr_root: Path,
+        artifact_root: Path,
+        amazon_beauty_image_manifest: Path,
+    ) -> None:
         self.fedvlr_root = fedvlr_root.resolve()
         self.artifact_root = artifact_root.resolve()
+        self.amazon_beauty_image_manifest = amazon_beauty_image_manifest.resolve()
+        self._image_manifest_cache: Dict[str, Any] | None = None
 
     def list_scenarios(self) -> Dict[str, Any]:
         warnings = self._root_warnings()
@@ -136,7 +188,30 @@ class ShowcaseArtifactStore:
         return self._load_artifact_group(scenario_id, SECURITY_ARTIFACT_KEYS)
 
     def load_report(self, scenario_id: str) -> Dict[str, Any]:
-        return self._load_artifact_group(scenario_id, REPORT_ARTIFACT_KEYS)
+        scenario_dir = self._get_scenario_dir(scenario_id)
+        artifact_keys = REPORT_ARTIFACT_KEYS
+        if self._is_matrix_scenario(scenario_dir):
+            artifact_keys = ("manifest", *MATRIX_ARTIFACT_KEYS)
+        return self._load_artifact_group_from_dir(
+            scenario_id,
+            scenario_dir,
+            artifact_keys,
+        )
+
+    def get_image_path(self, dataset: str, item_id: str) -> Path | None:
+        if not self._is_safe_path_segment(dataset):
+            return None
+        if not self._is_safe_path_segment(item_id):
+            return None
+
+        manifest = self._load_image_manifest()
+        if dataset != manifest.get("dataset"):
+            return None
+
+        image_path = manifest.get("items", {}).get(item_id)
+        if not isinstance(image_path, Path) or not image_path.is_file():
+            return None
+        return image_path
 
     def _load_artifact_group(
         self,
@@ -144,11 +219,27 @@ class ShowcaseArtifactStore:
         artifact_keys: Sequence[str],
     ) -> Dict[str, Any]:
         scenario_dir = self._get_scenario_dir(scenario_id)
+        return self._load_artifact_group_from_dir(
+            scenario_id,
+            scenario_dir,
+            artifact_keys,
+        )
+
+    def _load_artifact_group_from_dir(
+        self,
+        scenario_id: str,
+        scenario_dir: Path,
+        artifact_keys: Sequence[str],
+    ) -> Dict[str, Any]:
         response: Dict[str, Any] = {"scenario_id": scenario_id, "warnings": []}
 
         for artifact_key in artifact_keys:
             spec = self._get_artifact_spec(artifact_key)
-            result = self._read_artifact(scenario_dir, spec)
+            result = self._read_artifact(
+                scenario_dir,
+                spec,
+                preview=artifact_key == "recommendation_comparison",
+            )
             response[spec.response_key] = result.data
             response["warnings"].extend(result.warnings)
 
@@ -170,7 +261,7 @@ class ShowcaseArtifactStore:
 
         missing_files = [
             file_name
-            for file_name in EXPECTED_ARTIFACT_FILES
+            for file_name in self._expected_artifact_files(scenario_dir)
             if not (scenario_dir / file_name).is_file()
         ]
         for file_name in missing_files:
@@ -201,6 +292,7 @@ class ShowcaseArtifactStore:
             "path": self._public_scenario_path(scenario_dir),
             "available_files": self._available_files(scenario_dir),
             "dataset": self._first_string(
+                friendly.get("dataset"),
                 self._lookup_value(
                     manifest,
                     ("dataset", "dataset_name", "dataset_id"),
@@ -211,6 +303,7 @@ class ShowcaseArtifactStore:
                 ),
             ),
             "model": self._first_string(
+                friendly.get("model"),
                 self._lookup_value(manifest, ("model", "model_name", "base_model")),
                 self._lookup_value(
                     dataset_profile,
@@ -254,6 +347,7 @@ class ShowcaseArtifactStore:
         self,
         scenario_dir: Path,
         spec: ArtifactSpec,
+        preview: bool = False,
     ) -> ArtifactReadResult:
         file_path = scenario_dir / spec.file_name
         if not file_path.is_file():
@@ -271,7 +365,13 @@ class ShowcaseArtifactStore:
 
         try:
             with open(file_path, "r", encoding="utf-8") as file:
-                return ArtifactReadResult(data=json.load(file), warnings=[])
+                data = json.load(file)
+                if preview and spec.key == "recommendation_comparison":
+                    data = self._preview_recommendation_payload(data)
+                return ArtifactReadResult(
+                    data=self._publicize_payload(data, scenario_dir),
+                    warnings=[],
+                )
         except json.JSONDecodeError as exc:
             return ArtifactReadResult(
                 data=None,
@@ -337,6 +437,16 @@ class ShowcaseArtifactStore:
             raise FileNotFoundError(f"Showcase scenario not found: {scenario_id}")
         return scenario_dir
 
+    def _expected_artifact_files(self, scenario_dir: Path) -> Sequence[str]:
+        if self._is_matrix_scenario(scenario_dir):
+            return MATRIX_EXPECTED_ARTIFACT_FILES
+        return STANDARD_EXPECTED_ARTIFACT_FILES
+
+    def _is_matrix_scenario(self, scenario_dir: Path) -> bool:
+        return (
+            scenario_dir / ARTIFACT_SPECS["model_security_capability_matrix"].file_name
+        ).is_file()
+
     def _is_within_artifact_root(self, path: Path) -> bool:
         try:
             path.relative_to(self.artifact_root)
@@ -352,6 +462,184 @@ class ShowcaseArtifactStore:
 
     def _available_files(self, scenario_dir: Path) -> List[str]:
         return sorted(path.name for path in scenario_dir.iterdir() if path.is_file())
+
+    def _preview_recommendation_payload(self, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        preview_limit = 100
+        preview_data = dict(data)
+        total_counts: Dict[str, int] = {}
+        truncated_keys: List[str] = []
+        recommendation_keys = {
+            "baseline",
+            "attack",
+            "attacked",
+            "defense",
+            "baseline_recommendations",
+            "attack_recommendations",
+            "attacked_recommendations",
+            "defense_recommendations",
+            "defended_recommendations",
+        }
+
+        for key, value in data.items():
+            if not isinstance(value, list):
+                continue
+            if key not in recommendation_keys and not key.endswith("_recommendations"):
+                continue
+
+            total_counts[key] = len(value)
+            if len(value) > preview_limit:
+                preview_data[key] = value[:preview_limit]
+                truncated_keys.append(key)
+
+        if truncated_keys:
+            preview_data["preview_limit"] = preview_limit
+            preview_data["total_counts"] = {
+                **(data.get("total_counts") if isinstance(data.get("total_counts"), dict) else {}),
+                **total_counts,
+            }
+            warnings = data.get("warnings") if isinstance(data.get("warnings"), list) else []
+            preview_data["warnings"] = [
+                *warnings,
+                (
+                    "recommendation_comparison is preview-limited in /report; "
+                    "use /showcase/scenarios/{scenario_id}/recommendations for the full artifact."
+                ),
+            ]
+
+        return preview_data
+
+    def _load_image_manifest(self) -> Dict[str, Any]:
+        if self._image_manifest_cache is not None:
+            return self._image_manifest_cache
+
+        empty_manifest: Dict[str, Any] = {"dataset": None, "items": {}}
+        if not self.amazon_beauty_image_manifest.is_file():
+            self._image_manifest_cache = empty_manifest
+            return self._image_manifest_cache
+
+        try:
+            with open(self.amazon_beauty_image_manifest, "r", encoding="utf-8") as file:
+                manifest = json.load(file)
+        except (OSError, json.JSONDecodeError):
+            self._image_manifest_cache = empty_manifest
+            return self._image_manifest_cache
+
+        if not isinstance(manifest, dict):
+            self._image_manifest_cache = empty_manifest
+            return self._image_manifest_cache
+
+        dataset = self._coerce_string(manifest.get("dataset")) or "AMAZON_BEAUTY_POC"
+        output_dir = self._coerce_string(manifest.get("output_dir"))
+        image_root = (
+            self._resolve_fedvlr_path(output_dir)
+            if output_dir
+            else self.amazon_beauty_image_manifest.parent
+        )
+        items: Dict[str, Path] = {}
+
+        for item in manifest.get("items", []):
+            if not isinstance(item, dict):
+                continue
+            local_image_path = self._coerce_string(item.get("local_image_path"))
+            if not local_image_path:
+                continue
+            image_path = self._resolve_fedvlr_path(local_image_path)
+            if not self._is_within_path(image_path, image_root):
+                continue
+
+            item_ids = [
+                self._coerce_string(item.get("itemID")),
+                self._coerce_string(item.get("item_id")),
+                self._coerce_string(item.get("id")),
+                self._coerce_string(item.get("raw_item_id")),
+            ]
+            for item_id in item_ids:
+                if item_id and self._is_safe_path_segment(item_id):
+                    items[item_id] = image_path
+
+        self._image_manifest_cache = {"dataset": dataset, "items": items}
+        return self._image_manifest_cache
+
+    def _publicize_payload(self, value: Any, scenario_dir: Path) -> Any:
+        return self._publicize_value(value, self._infer_dataset(scenario_dir))
+
+    def _publicize_value(self, value: Any, dataset: str | None) -> Any:
+        if isinstance(value, dict):
+            public_value = {
+                key: self._publicize_value(item, dataset)
+                for key, item in value.items()
+            }
+            item_id = self._first_string(
+                public_value.get("item_id"),
+                public_value.get("itemID"),
+                public_value.get("itemId"),
+                public_value.get("id"),
+                public_value.get("asin"),
+                public_value.get("raw_item_id"),
+            )
+            if (
+                dataset
+                and item_id
+                and "local_image_url" not in public_value
+                and self.get_image_path(dataset, item_id)
+            ):
+                public_value["local_image_url"] = (
+                    f"/showcase/images/{dataset}/{quote(item_id, safe='')}"
+                )
+            return public_value
+
+        if isinstance(value, list):
+            return [self._publicize_value(item, dataset) for item in value]
+
+        if isinstance(value, str):
+            return self._publicize_string(value)
+
+        return value
+
+    def _publicize_string(self, value: str) -> str:
+        if "://" in value:
+            return value
+        if "\\" not in value and "/" not in value:
+            return value
+
+        path = Path(value)
+        if path.is_absolute():
+            resolved_path = path.resolve()
+            if self._is_within_path(resolved_path, self.fedvlr_root):
+                return resolved_path.relative_to(self.fedvlr_root).as_posix()
+            return path.name
+
+        return value.replace("\\", "/")
+
+    def _infer_dataset(self, scenario_dir: Path) -> str | None:
+        scenario_id = scenario_dir.name.lower()
+        if "amazon_beauty" in scenario_id:
+            return "AMAZON_BEAUTY_POC"
+        return None
+
+    def _resolve_fedvlr_path(self, value: str) -> Path:
+        path = Path(value).expanduser()
+        if path.is_absolute():
+            return path.resolve()
+        return (self.fedvlr_root / path).resolve()
+
+    def _is_within_path(self, path: Path, root: Path) -> bool:
+        try:
+            path.resolve().relative_to(root.resolve())
+        except ValueError:
+            return False
+        return True
+
+    def _is_safe_path_segment(self, value: str) -> bool:
+        if not value or value in {".", ".."}:
+            return False
+        path = Path(value)
+        if path.name != value:
+            return False
+        return "/" not in value and "\\" not in value and ".." not in value
 
     def _lookup_value(self, payload: Dict[str, Any], keys: Iterable[str]) -> Any:
         for key in keys:
@@ -426,4 +714,5 @@ def get_showcase_store() -> ShowcaseArtifactStore:
     return ShowcaseArtifactStore(
         fedvlr_root=settings.fedvlr_root,
         artifact_root=settings.showcase_artifact_root,
+        amazon_beauty_image_manifest=settings.amazon_beauty_image_manifest,
     )

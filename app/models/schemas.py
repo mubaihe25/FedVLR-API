@@ -101,6 +101,10 @@ class ShowcaseReportResponse(BaseModel):
     recommendation_comparison: Any | None = None
     defense_trace: Any | None = None
     privacy_risk_summary: Any | None = None
+    model_security_capability_matrix: Any | None = None
+    supported_demos: Any | None = None
+    unsupported_reasons: Any | None = None
+    recommended_frontend_labels: Any | None = None
     warnings: List[ShowcaseWarning] = Field(default_factory=list)
 
 

@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
 
 from app.models.schemas import (
     ShowcaseArtifactResponse,
@@ -19,6 +20,18 @@ def list_showcase_scenarios(
     store: ShowcaseArtifactStore = Depends(get_showcase_store),
 ) -> ShowcaseScenarioListResponse:
     return ShowcaseScenarioListResponse(**store.list_scenarios())
+
+
+@router.get("/images/{dataset}/{item_id}", response_class=FileResponse)
+def get_showcase_image(
+    dataset: str,
+    item_id: str,
+    store: ShowcaseArtifactStore = Depends(get_showcase_store),
+) -> FileResponse:
+    image_path = store.get_image_path(dataset, item_id)
+    if image_path is None:
+        raise HTTPException(status_code=404, detail="Showcase image not found")
+    return FileResponse(image_path)
 
 
 @router.get("/scenarios/{scenario_id}/manifest", response_model=ShowcaseArtifactResponse)

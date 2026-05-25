@@ -13,6 +13,7 @@ class Settings:
     fedvlr_root: Path
     results_dir: Path
     showcase_artifact_root: Path
+    amazon_beauty_image_manifest: Path
 
 
 @lru_cache(maxsize=1)
@@ -53,4 +54,7 @@ def get_settings() -> Settings:
         fedvlr_root=fedvlr_root,
         results_dir=results_dir,
         showcase_artifact_root=showcase_artifact_root,
+        amazon_beauty_image_manifest=(
+            fedvlr_root / "datasets" / "AMAZON_BEAUTY_POC" / "item_image_manifest.json"
+        ).resolve(),
     )
