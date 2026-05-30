@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Literal
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 
 from app.models.schemas import (
@@ -26,9 +28,10 @@ def list_showcase_scenarios(
 def get_showcase_image(
     dataset: str,
     item_id: str,
+    size: Literal["thumb", "full"] = "thumb",
     store: ShowcaseArtifactStore = Depends(get_showcase_store),
 ) -> FileResponse:
-    image_path = store.get_image_path(dataset, item_id)
+    image_path = store.get_image_path(dataset, item_id, size=size)
     if image_path is None:
         raise HTTPException(status_code=404, detail="Showcase image not found")
     return FileResponse(image_path)
@@ -77,11 +80,13 @@ def get_showcase_metrics(
 )
 def get_showcase_recommendations(
     scenario_id: str,
+    limit: int = Query(5, ge=1, le=50),
+    column: Literal["baseline", "attack", "defense", "all"] = "all",
     store: ShowcaseArtifactStore = Depends(get_showcase_store),
 ) -> ShowcaseArtifactResponse:
     try:
         return ShowcaseArtifactResponse(
-            **store.load_artifact(scenario_id, "recommendation_comparison")
+            **store.load_recommendations(scenario_id, limit=limit, column=column)
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

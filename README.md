@@ -83,11 +83,11 @@ The API defaults to `http://127.0.0.1:8000`.
 - `GET /showcase/scenarios/{scenario_id}/manifest`
 - `GET /showcase/scenarios/{scenario_id}/dataset`
 - `GET /showcase/scenarios/{scenario_id}/metrics`
-- `GET /showcase/scenarios/{scenario_id}/recommendations`
+- `GET /showcase/scenarios/{scenario_id}/recommendations?limit=5|15|50&column=baseline|attack|defense|all`
 - `GET /showcase/scenarios/{scenario_id}/security`
 - `GET /showcase/scenarios/{scenario_id}/privacy`
 - `GET /showcase/scenarios/{scenario_id}/report`
-- `GET /showcase/images/{dataset}/{item_id}`
+- `GET /showcase/images/{dataset}/{item_id}?size=thumb|full`
 
 ## Experiment Launch
 
@@ -129,17 +129,21 @@ The aggregate report can include:
 - `recommended_frontend_labels`
 
 For large recommendation artifacts, `/showcase/scenarios/{scenario_id}/report`
-returns a preview-limited `recommendation_comparison` with `preview_limit` and
-`total_counts`; use `/showcase/scenarios/{scenario_id}/recommendations` when a
-full recommendation artifact is required.
+returns a preview-limited `recommendation_comparison` with `preview_limit`,
+`total_counts`, and `has_more`. Use
+`/showcase/scenarios/{scenario_id}/recommendations?limit=5|15|50&column=baseline|attack|defense|all`
+for paged recommendation rows. The recommendation endpoint returns only the
+requested slice plus image metadata such as `thumbnail_url`, `local_image_url`,
+`image_url`, `title`, `category`, `rank`, and `item_id`; it should not return the
+full 25k+ row artifact to the frontend.
 
-`GET /showcase/images/{dataset}/{item_id}` serves local Amazon Beauty cached
-images only when the image is registered in
+`GET /showcase/images/{dataset}/{item_id}?size=thumb|full` serves local Amazon
+Beauty cached images only when the image is registered in
 `FedVLR/datasets/AMAZON_BEAUTY_POC/item_image_manifest.json`. The endpoint
-guards path segments, returns `404` for unregistered or missing files, and does
-not expose local absolute paths. Recommendation and target-rank artifacts may
-include `local_image_url` values that point to this endpoint when a registered
-local image exists.
+defaults to thumbnails, guards path segments, returns `404` for unregistered or
+missing files, and does not expose local absolute paths. Recommendation and
+target-rank artifacts may include `thumbnail_url` and `local_image_url` values
+that point to this endpoint when a registered local image exists.
 
 ## Security Capability Boundary
 

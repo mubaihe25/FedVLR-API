@@ -27,9 +27,10 @@
 ## Showcase Notes
 
 - `showcase_store.py` 读取标准 showcase artifacts，也读取 `model_security_capability_matrix` 目录中的 `model_security_capability_matrix.json`、`supported_demos.json`、`unsupported_reasons.json` 和 `recommended_frontend_labels.json`。
-- `/showcase/images/{dataset}/{item_id}` 只能返回 `FedVLR/datasets/AMAZON_BEAUTY_POC/item_image_manifest.json` 登记过的图片；必须保留路径穿越检查，未登记或文件缺失返回 404。
-- 推荐项或 target-rank 行如果存在 manifest 登记图片，可以补 `local_image_url`，但不能暴露 D 盘等本地绝对路径。
-- `/showcase/scenarios/{scenario_id}/report` 对大型 `recommendation_comparison` 使用 preview rows 加 `total_counts`，保持前端展示可用；完整 artifact 仍由 `/showcase/scenarios/{scenario_id}/recommendations` 读取。
+- `/showcase/images/{dataset}/{item_id}?size=thumb|full` 只能返回 `FedVLR/datasets/AMAZON_BEAUTY_POC/item_image_manifest.json` 登记过的图片；默认 `size=thumb`，必须优先服务缩略图，保留路径穿越检查，未登记或文件缺失返回 404。
+- 推荐项或 target-rank 行如果存在 manifest 登记图片，可以补 `thumbnail_url` 和 `local_image_url`，但不能暴露 D 盘等本地绝对路径。
+- `/showcase/scenarios/{scenario_id}/recommendations` 必须支持 `limit` 和 `column`，默认只返回少量展示行、`total_counts` 和 `has_more`，不要返回全量超大推荐列表。
+- `/showcase/scenarios/{scenario_id}/report` 对大型 `recommendation_comparison` 使用 preview rows 加 `total_counts`，保持前端展示可用；更长推荐列表由 `/showcase/scenarios/{scenario_id}/recommendations?limit=5|15|50` 按需读取。
 
 ## 验证建议
 

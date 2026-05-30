@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Sequence
+from typing import Any, Dict, Iterable, List, Sequence, Tuple
 from urllib.parse import quote
 
 from app.core.settings import get_settings
@@ -145,6 +145,23 @@ FRIENDLY_SCENARIOS: Dict[str, Dict[str, Any]] = {
     },
 }
 
+RECOMMENDATION_COLUMNS: Dict[str, Tuple[str, Tuple[str, ...]]] = {
+    "baseline": ("baseline_recommendations", ("baseline_recommendations", "baseline")),
+    "attack": (
+        "attack_recommendations",
+        ("attack_recommendations", "attacked_recommendations", "attack", "attacked"),
+    ),
+    "defense": (
+        "defended_recommendations",
+        (
+            "defended_recommendations",
+            "defense_recommendations",
+            "defense",
+            "defended",
+        ),
+    ),
+}
+
 
 class ShowcaseArtifactStore:
     """Read-only wrapper around exported FedVLR showcase artifacts."""
@@ -159,6 +176,7 @@ class ShowcaseArtifactStore:
         self.artifact_root = artifact_root.resolve()
         self.amazon_beauty_image_manifest = amazon_beauty_image_manifest.resolve()
         self._image_manifest_cache: Dict[str, Any] | None = None
+        self._json_cache: Dict[Path, Tuple[float, Any]] = {}
 
     def list_scenarios(self) -> Dict[str, Any]:
         warnings = self._root_warnings()
@@ -198,7 +216,41 @@ class ShowcaseArtifactStore:
             artifact_keys,
         )
 
-    def get_image_path(self, dataset: str, item_id: str) -> Path | None:
+    def load_recommendations(
+        self,
+        scenario_id: str,
+        limit: int = 5,
+        column: str = "all",
+    ) -> Dict[str, Any]:
+        spec = self._get_artifact_spec("recommendation_comparison")
+        scenario_dir = self._get_scenario_dir(scenario_id)
+        file_path = scenario_dir / spec.file_name
+        if not file_path.is_file():
+            raise FileNotFoundError(
+                f"{spec.file_name} not found for showcase scenario '{scenario_id}'"
+            )
+
+        data = self._read_json_file(file_path)
+        payload = self._build_recommendation_payload(
+            data,
+            scenario_dir,
+            limit=limit,
+            column=column,
+        )
+        return {
+            "scenario_id": scenario_id,
+            "artifact": spec.response_key,
+            "file": spec.file_name,
+            "data": payload,
+            "warnings": [],
+        }
+
+    def get_image_path(
+        self,
+        dataset: str,
+        item_id: str,
+        size: str = "thumb",
+    ) -> Path | None:
         if not self._is_safe_path_segment(dataset):
             return None
         if not self._is_safe_path_segment(item_id):
@@ -208,9 +260,17 @@ class ShowcaseArtifactStore:
         if dataset != manifest.get("dataset"):
             return None
 
-        image_path = manifest.get("items", {}).get(item_id)
-        if not isinstance(image_path, Path) or not image_path.is_file():
+        image_info = manifest.get("items", {}).get(item_id)
+        if not isinstance(image_info, dict):
             return None
+
+        key = "thumbnail_path" if size == "thumb" else "full_path"
+        image_path = image_info.get(key)
+        if not isinstance(image_path, Path) or not image_path.is_file():
+            if size == "thumb":
+                image_path = image_info.get("full_path")
+            if not isinstance(image_path, Path) or not image_path.is_file():
+                return None
         return image_path
 
     def _load_artifact_group(
@@ -274,6 +334,7 @@ class ShowcaseArtifactStore:
             )
 
         friendly = FRIENDLY_SCENARIOS.get(scenario_id, {})
+        available_files = self._available_files(scenario_dir)
         name = self._first_string(
             friendly.get("name"),
             self._lookup_value(manifest, ("name", "title", "scenario_name")),
@@ -285,36 +346,56 @@ class ShowcaseArtifactStore:
                 self._lookup_value(manifest, ("tags", "scenario_tags")),
                 self._lookup_value(dataset_profile, ("tags", "scenario_tags")),
             )
+        dataset = self._first_string(
+            friendly.get("dataset"),
+            self._lookup_value(
+                manifest,
+                ("dataset", "dataset_name", "dataset_id"),
+            ),
+            self._lookup_value(
+                dataset_profile,
+                ("dataset", "dataset_name", "dataset_id"),
+            ),
+        )
+        model = self._first_string(
+            friendly.get("model"),
+            self._lookup_value(manifest, ("model", "model_name", "base_model")),
+            self._lookup_value(
+                dataset_profile,
+                ("model", "model_name", "base_model"),
+            ),
+        )
+        has_images = dataset == "AMAZON_BEAUTY_POC" and bool(
+            self._load_image_manifest().get("items")
+        )
 
         return {
             "id": scenario_id,
             "name": name,
+            "display_name": name,
             "path": self._public_scenario_path(scenario_dir),
-            "available_files": self._available_files(scenario_dir),
-            "dataset": self._first_string(
-                friendly.get("dataset"),
-                self._lookup_value(
-                    manifest,
-                    ("dataset", "dataset_name", "dataset_id"),
-                ),
-                self._lookup_value(
-                    dataset_profile,
-                    ("dataset", "dataset_name", "dataset_id"),
-                ),
-            ),
-            "model": self._first_string(
-                friendly.get("model"),
-                self._lookup_value(manifest, ("model", "model_name", "base_model")),
-                self._lookup_value(
-                    dataset_profile,
-                    ("model", "model_name", "base_model"),
-                ),
-            ),
+            "available_files": available_files,
+            "dataset": dataset,
+            "model": model,
             "description": self._first_string(
                 self._lookup_value(manifest, ("description", "summary")),
                 self._lookup_value(dataset_profile, ("description", "summary")),
             ),
             "tags": tags,
+            "is_display_ready": bool(available_files),
+            "has_recommendations": (
+                ARTIFACT_SPECS["recommendation_comparison"].file_name
+                in available_files
+            ),
+            "has_privacy": (
+                ARTIFACT_SPECS["privacy_risk_summary"].file_name
+                in available_files
+            ),
+            "has_metrics": (
+                ARTIFACT_SPECS["metrics_summary"].file_name
+                in available_files
+            ),
+            "has_images": has_images,
             "warnings": scenario_warnings,
         }
 
@@ -364,14 +445,13 @@ class ShowcaseArtifactStore:
             )
 
         try:
-            with open(file_path, "r", encoding="utf-8") as file:
-                data = json.load(file)
-                if preview and spec.key == "recommendation_comparison":
-                    data = self._preview_recommendation_payload(data)
-                return ArtifactReadResult(
-                    data=self._publicize_payload(data, scenario_dir),
-                    warnings=[],
-                )
+            data = self._read_json_file(file_path)
+            if preview and spec.key == "recommendation_comparison":
+                data = self._preview_recommendation_payload(data, scenario_dir)
+            return ArtifactReadResult(
+                data=self._publicize_payload(data, scenario_dir),
+                warnings=[],
+            )
         except json.JSONDecodeError as exc:
             return ArtifactReadResult(
                 data=None,
@@ -386,6 +466,17 @@ class ShowcaseArtifactStore:
                     )
                 ],
             )
+
+    def _read_json_file(self, file_path: Path) -> Any:
+        stat = file_path.stat()
+        cache_entry = self._json_cache.get(file_path)
+        if cache_entry and cache_entry[0] == stat.st_mtime:
+            return cache_entry[1]
+
+        with open(file_path, "r", encoding="utf-8") as file:
+            data = json.load(file)
+        self._json_cache[file_path] = (stat.st_mtime, data)
+        return data
 
     def _get_artifact_spec(self, artifact_key: str) -> ArtifactSpec:
         try:
@@ -463,53 +554,155 @@ class ShowcaseArtifactStore:
     def _available_files(self, scenario_dir: Path) -> List[str]:
         return sorted(path.name for path in scenario_dir.iterdir() if path.is_file())
 
-    def _preview_recommendation_payload(self, data: Any) -> Any:
+    def _preview_recommendation_payload(self, data: Any, scenario_dir: Path) -> Any:
         if not isinstance(data, dict):
             return data
 
-        preview_limit = 100
+        preview_limit = 5
         preview_data = dict(data)
-        total_counts: Dict[str, int] = {}
-        truncated_keys: List[str] = []
-        recommendation_keys = {
-            "baseline",
-            "attack",
-            "attacked",
-            "defense",
-            "baseline_recommendations",
-            "attack_recommendations",
-            "attacked_recommendations",
-            "defense_recommendations",
-            "defended_recommendations",
-        }
+        recommendation_preview = self._build_recommendation_payload(
+            data,
+            scenario_dir,
+            limit=preview_limit,
+            column="all",
+        )
+        for column_key, (output_key, source_keys) in RECOMMENDATION_COLUMNS.items():
+            preview_data[output_key] = recommendation_preview.get(output_key, [])
+            for source_key in source_keys:
+                if source_key in preview_data and source_key != output_key:
+                    preview_data[source_key] = recommendation_preview.get(output_key, [])
 
-        for key, value in data.items():
-            if not isinstance(value, list):
-                continue
-            if key not in recommendation_keys and not key.endswith("_recommendations"):
-                continue
-
-            total_counts[key] = len(value)
-            if len(value) > preview_limit:
-                preview_data[key] = value[:preview_limit]
-                truncated_keys.append(key)
-
-        if truncated_keys:
-            preview_data["preview_limit"] = preview_limit
-            preview_data["total_counts"] = {
-                **(data.get("total_counts") if isinstance(data.get("total_counts"), dict) else {}),
-                **total_counts,
-            }
-            warnings = data.get("warnings") if isinstance(data.get("warnings"), list) else []
+        preview_data["preview_limit"] = preview_limit
+        preview_data["total_counts"] = recommendation_preview["total_counts"]
+        preview_data["has_more"] = recommendation_preview["has_more"]
+        warnings = data.get("warnings") if isinstance(data.get("warnings"), list) else []
+        if any(recommendation_preview["has_more"].values()):
             preview_data["warnings"] = [
                 *warnings,
                 (
                     "recommendation_comparison is preview-limited in /report; "
-                    "use /showcase/scenarios/{scenario_id}/recommendations for the full artifact."
+                    "use /showcase/scenarios/{scenario_id}/recommendations?limit=5|15|50 "
+                    "for paged recommendation rows."
                 ),
             ]
 
         return preview_data
+
+    def _build_recommendation_payload(
+        self,
+        data: Any,
+        scenario_dir: Path,
+        limit: int,
+        column: str,
+    ) -> Dict[str, Any]:
+        if not isinstance(data, dict):
+            return {
+                "baseline_recommendations": [],
+                "attack_recommendations": [],
+                "defended_recommendations": [],
+                "total_counts": {"baseline": 0, "attack": 0, "defense": 0},
+                "has_more": {"baseline": False, "attack": False, "defense": False},
+                "limit": limit,
+                "column": column,
+            }
+
+        limit = max(1, min(int(limit), 50))
+        selected_columns = (
+            tuple(RECOMMENDATION_COLUMNS.keys())
+            if column == "all"
+            else (column if column in RECOMMENDATION_COLUMNS else "baseline",)
+        )
+        dataset = self._infer_dataset(scenario_dir)
+
+        payload: Dict[str, Any] = {
+            "baseline_recommendations": [],
+            "attack_recommendations": [],
+            "defended_recommendations": [],
+            "total_counts": {},
+            "has_more": {},
+            "limit": limit,
+            "column": column,
+        }
+
+        for column_key, (output_key, _) in RECOMMENDATION_COLUMNS.items():
+            rows = self._recommendation_rows_for_column(data, column_key)
+            total_count = len(rows)
+            payload["total_counts"][column_key] = total_count
+            payload["total_counts"][output_key] = total_count
+            payload["has_more"][column_key] = total_count > limit
+            payload["has_more"][output_key] = total_count > limit
+
+            if column_key not in selected_columns:
+                continue
+
+            payload[output_key] = [
+                self._enrich_recommendation_item(row, dataset)
+                for row in rows[:limit]
+            ]
+
+        for key in (
+            "note",
+            "recommendation_manipulation",
+            "target_items",
+            "target_rank_score",
+            "warnings",
+        ):
+            if key in data:
+                payload[key] = self._publicize_value(data[key], dataset)
+
+        return payload
+
+    def _recommendation_rows_for_column(
+        self,
+        data: Dict[str, Any],
+        column: str,
+    ) -> List[Any]:
+        _, source_keys = RECOMMENDATION_COLUMNS[column]
+        for source_key in source_keys:
+            value = data.get(source_key)
+            if isinstance(value, list):
+                return value
+        return []
+
+    def _enrich_recommendation_item(
+        self,
+        item: Any,
+        dataset: str | None,
+    ) -> Dict[str, Any]:
+        if not isinstance(item, dict):
+            return {"item_id": self._coerce_string(item)}
+
+        public_item = {
+            key: self._publicize_value(value, dataset)
+            for key, value in item.items()
+            if key != "source_file"
+        }
+        item_id = self._first_string(
+            public_item.get("item_id"),
+            public_item.get("itemID"),
+            public_item.get("itemId"),
+            public_item.get("id"),
+            public_item.get("asin"),
+            public_item.get("raw_item_id"),
+        )
+        if item_id:
+            public_item["item_id"] = item_id
+
+        image_info = self._get_image_info(dataset, item_id) if dataset and item_id else None
+        if image_info:
+            public_item.setdefault("title", image_info.get("title"))
+            public_item.setdefault("category", image_info.get("category"))
+            public_item.setdefault("image_url", image_info.get("image_url"))
+            if image_info.get("full_path"):
+                public_item["local_image_url"] = (
+                    f"/showcase/images/{dataset}/{quote(item_id, safe='')}?size=full"
+                )
+            if image_info.get("thumbnail_path"):
+                public_item["thumbnail_url"] = (
+                    f"/showcase/images/{dataset}/{quote(item_id, safe='')}?size=thumb"
+                )
+
+        return public_item
 
     def _load_image_manifest(self) -> Dict[str, Any]:
         if self._image_manifest_cache is not None:
@@ -538,7 +731,13 @@ class ShowcaseArtifactStore:
             if output_dir
             else self.amazon_beauty_image_manifest.parent
         )
-        items: Dict[str, Path] = {}
+        thumbnail_dir = self._coerce_string(manifest.get("thumbnail_dir"))
+        thumbnail_root = (
+            self._resolve_fedvlr_path(thumbnail_dir)
+            if thumbnail_dir
+            else image_root / "thumbs"
+        )
+        items: Dict[str, Dict[str, Any]] = {}
 
         for item in manifest.get("items", []):
             if not isinstance(item, dict):
@@ -549,6 +748,26 @@ class ShowcaseArtifactStore:
             image_path = self._resolve_fedvlr_path(local_image_path)
             if not self._is_within_path(image_path, image_root):
                 continue
+            if not self._is_within_path(image_path, self.fedvlr_root):
+                continue
+
+            thumbnail_path: Path | None = None
+            thumbnail_value = self._coerce_string(item.get("thumbnail_path"))
+            if thumbnail_value:
+                resolved_thumbnail = self._resolve_fedvlr_path(thumbnail_value)
+                if self._is_within_path(
+                    resolved_thumbnail,
+                    thumbnail_root,
+                ) and self._is_within_path(resolved_thumbnail, self.fedvlr_root):
+                    thumbnail_path = resolved_thumbnail
+
+            image_info = {
+                "full_path": image_path,
+                "thumbnail_path": thumbnail_path,
+                "title": self._coerce_string(item.get("title")),
+                "category": self._coerce_string(item.get("category")),
+                "image_url": self._coerce_string(item.get("image_url")),
+            }
 
             item_ids = [
                 self._coerce_string(item.get("itemID")),
@@ -558,10 +777,25 @@ class ShowcaseArtifactStore:
             ]
             for item_id in item_ids:
                 if item_id and self._is_safe_path_segment(item_id):
-                    items[item_id] = image_path
+                    items[item_id] = image_info
 
         self._image_manifest_cache = {"dataset": dataset, "items": items}
         return self._image_manifest_cache
+
+    def _get_image_info(
+        self,
+        dataset: str | None,
+        item_id: str | None,
+    ) -> Dict[str, Any] | None:
+        if not dataset or not item_id:
+            return None
+        if not self._is_safe_path_segment(dataset) or not self._is_safe_path_segment(item_id):
+            return None
+        manifest = self._load_image_manifest()
+        if dataset != manifest.get("dataset"):
+            return None
+        image_info = manifest.get("items", {}).get(item_id)
+        return image_info if isinstance(image_info, dict) else None
 
     def _publicize_payload(self, value: Any, scenario_dir: Path) -> Any:
         return self._publicize_value(value, self._infer_dataset(scenario_dir))
@@ -580,15 +814,19 @@ class ShowcaseArtifactStore:
                 public_value.get("asin"),
                 public_value.get("raw_item_id"),
             )
-            if (
-                dataset
-                and item_id
-                and "local_image_url" not in public_value
-                and self.get_image_path(dataset, item_id)
-            ):
-                public_value["local_image_url"] = (
-                    f"/showcase/images/{dataset}/{quote(item_id, safe='')}"
-                )
+            image_info = self._get_image_info(dataset, item_id)
+            if dataset and item_id and image_info:
+                if "local_image_url" not in public_value and image_info.get("full_path"):
+                    public_value["local_image_url"] = (
+                        f"/showcase/images/{dataset}/{quote(item_id, safe='')}?size=full"
+                    )
+                if "thumbnail_url" not in public_value and image_info.get("thumbnail_path"):
+                    public_value["thumbnail_url"] = (
+                        f"/showcase/images/{dataset}/{quote(item_id, safe='')}?size=thumb"
+                    )
+                public_value.setdefault("title", image_info.get("title"))
+                public_value.setdefault("category", image_info.get("category"))
+                public_value.setdefault("image_url", image_info.get("image_url"))
             return public_value
 
         if isinstance(value, list):

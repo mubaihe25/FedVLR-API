@@ -62,12 +62,18 @@ class ShowcaseWarning(BaseModel):
 class ShowcaseScenarioItem(BaseModel):
     id: str
     name: str | None = None
+    display_name: str | None = None
     path: str
     available_files: List[str] = Field(default_factory=list)
     dataset: str | None = None
     model: str | None = None
     description: str | None = None
     tags: List[str] = Field(default_factory=list)
+    is_display_ready: bool = False
+    has_recommendations: bool = False
+    has_privacy: bool = False
+    has_metrics: bool = False
+    has_images: bool = False
     warnings: List[ShowcaseWarning] = Field(default_factory=list)
 
 
