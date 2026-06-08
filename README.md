@@ -88,6 +88,17 @@ The API defaults to `http://127.0.0.1:8000`.
 - `GET /showcase/scenarios/{scenario_id}/privacy`
 - `GET /showcase/scenarios/{scenario_id}/report`
 - `GET /showcase/images/{dataset}/{item_id}?size=thumb|full`
+- `GET /showcase/scenarios/{scenario_id}/v3/profile`
+- `GET /showcase/scenarios/{scenario_id}/v3/runtime`
+- `GET /showcase/scenarios/{scenario_id}/v3/curves`
+- `GET /showcase/scenarios/{scenario_id}/v3/target-manipulation`
+- `GET /showcase/scenarios/{scenario_id}/v3/membership`
+- `GET /showcase/scenarios/{scenario_id}/v3/update-leakage`
+- `GET /showcase/scenarios/{scenario_id}/v3/aggregation-defense`
+- `GET /showcase/scenarios/{scenario_id}/v3/privacy-defense`
+- `GET /showcase/scenarios/{scenario_id}/v3/model-support`
+- `GET /showcase/scenarios/{scenario_id}/v3/frontend-summary`
+- `GET /showcase/scenarios/{scenario_id}/v3/report`
 
 ## Experiment Launch
 
@@ -118,6 +129,42 @@ Showcase artifacts are read from `<SHOWCASE_ARTIFACT_ROOT>` when set, otherwise 
 The artifact APIs are read-only. They do not modify artifacts, start training, or delete outputs. Missing files in aggregate responses are returned as `null` with structured warnings. Single-file artifact endpoints return `404` when the requested file is absent. Invalid JSON is returned as `data: null` plus a warning instead of a server error.
 
 Scenario list responses expose a public relative `path`, not the local absolute filesystem path.
+
+The scanner recognizes Security Artifact V3 scenarios such as
+`<SHOWCASE_ARTIFACT_ROOT>/amazon_beauty_poc_security_v3`. A V3 scenario may
+contain:
+
+- `scenario_profile.json`
+- `runtime_timeline.json`
+- `training_curves.json`
+- `target_manipulation_metrics.json`
+- `membership_inference_panel.json`
+- `update_leakage_panel.json`
+- `aggregation_defense_panel.json`
+- `privacy_defense_panel.json`
+- `model_support_panel.json`
+- `frontend_summary.json`
+
+`GET /showcase/scenarios` returns V3 light summary flags without reading large
+recommendation lists: `has_v3`, `available_panels`, `supported_directions`,
+`has_runtime`, `has_curves`, `has_target_manipulation`, `has_membership`,
+`has_update_leakage`, `has_aggregation_defense`, `has_privacy_defense`,
+`has_model_support`, and `has_images`.
+
+The V3 endpoints serve structured panels for the frontend's four security
+directions: recommendation manipulation, membership inference, update leakage,
+and aggregation defense. `/v3/report` reads the ten small V3 JSON files and
+returns missing panels as `null` with `missing_panel` warnings. Single-panel V3
+endpoints return `404` when the requested panel file is absent. Invalid JSON is
+returned as `data: null` with an `invalid_json` warning.
+
+The API preserves V3 backend semantics. Do not rewrite
+`attack_topk_hit=false`, `target_manipulation_index`,
+`evidence_type=mixed_proxy`, `status=configured_only`,
+`formal_dp_available=false`, or secure aggregation demo/simulation fields into
+stronger claims. The service may add display-only fields such as
+`display_status`, `display_warning`, and `display_tags`, but it must not invent
+formal DP, checkpoint score, or attack-success evidence.
 
 The showcase scanner also supports `model_security_capability_matrix` scenarios
 exported under `outputs/showcase_artifacts/model_security_capability_matrix`.

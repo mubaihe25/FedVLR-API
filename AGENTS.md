@@ -20,6 +20,9 @@
 - showcase artifact API 只读读取 `<FEDVLR_ROOT>/outputs/showcase_artifacts` 或 `SHOWCASE_ARTIFACT_ROOT`；不要修改 artifacts、不要运行训练、不要删除 outputs。
 - showcase artifact 响应不要暴露本地绝对路径；scenario `path` 保持为面向前端的相对路径。
 - artifact 聚合接口缺失文件应返回 `null` 和结构化 warning；单文件 artifact 缺失才返回 404。
+- Security Artifact V3 场景位于 `<SHOWCASE_ARTIFACT_ROOT>/amazon_beauty_poc_security_v3` 这类 scenario 目录；V3 panel 缺失时 `/v3/report` 返回 `null` 和 `missing_panel` warning，单 panel 缺失按 404 处理。
+- V3 字段语义必须原样保留：不要把 `attack_topk_hit=false`、`evidence_type=mixed_proxy`、`status=configured_only`、`formal_dp_available=false`、SecAgg demo/simulation 或 target manipulation 指标改写成更强的实现结论。
+- V3 可以补充 `display_status`、`display_warning`、`display_tags` 这类展示字段，但不要伪造 formal DP、checkpoint score、attack success 或真实生产级安全聚合证据。
 - `launch registry` 当前是进程内内存态，服务重启会丢失状态；不要写成生产级持久任务队列。
 - 当前 API 不包含数据库、鉴权、生产级任务队列或真实 stop 控制；如需新增，需要单独设计。
 - 不要把差分隐私、同态加密、安全聚合写成已正式实现。
@@ -31,6 +34,8 @@
 - 推荐项或 target-rank 行如果存在 manifest 登记图片，可以补 `thumbnail_url` 和 `local_image_url`，但不能暴露 D 盘等本地绝对路径。
 - `/showcase/scenarios/{scenario_id}/recommendations` 必须支持 `limit` 和 `column`，默认只返回少量展示行、`total_counts` 和 `has_more`，不要返回全量超大推荐列表。
 - `/showcase/scenarios/{scenario_id}/report` 对大型 `recommendation_comparison` 使用 preview rows 加 `total_counts`，保持前端展示可用；更长推荐列表由 `/showcase/scenarios/{scenario_id}/recommendations?limit=5|15|50` 按需读取。
+- Security Artifact V3 endpoints 包括 `/showcase/scenarios/{scenario_id}/v3/profile`、`runtime`、`curves`、`target-manipulation`、`membership`、`update-leakage`、`aggregation-defense`、`privacy-defense`、`model-support`、`frontend-summary` 和 `/v3/report`。
+- `/showcase/scenarios` 对 V3 只返回轻量摘要字段，包括 `has_v3`、`available_panels`、`supported_directions`、各 panel 的 `has_*` 布尔值和 `has_images`；不要为了列表页读取大推荐列表。
 
 ## 验证建议
 

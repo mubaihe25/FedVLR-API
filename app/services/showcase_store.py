@@ -80,6 +80,56 @@ ARTIFACT_SPECS: Dict[str, ArtifactSpec] = {
         response_key="recommended_frontend_labels",
         file_name="recommended_frontend_labels.json",
     ),
+    "v3_profile": ArtifactSpec(
+        key="v3_profile",
+        response_key="profile",
+        file_name="scenario_profile.json",
+    ),
+    "v3_runtime": ArtifactSpec(
+        key="v3_runtime",
+        response_key="runtime",
+        file_name="runtime_timeline.json",
+    ),
+    "v3_curves": ArtifactSpec(
+        key="v3_curves",
+        response_key="curves",
+        file_name="training_curves.json",
+    ),
+    "v3_target_manipulation": ArtifactSpec(
+        key="v3_target_manipulation",
+        response_key="target_manipulation",
+        file_name="target_manipulation_metrics.json",
+    ),
+    "v3_membership": ArtifactSpec(
+        key="v3_membership",
+        response_key="membership",
+        file_name="membership_inference_panel.json",
+    ),
+    "v3_update_leakage": ArtifactSpec(
+        key="v3_update_leakage",
+        response_key="update_leakage",
+        file_name="update_leakage_panel.json",
+    ),
+    "v3_aggregation_defense": ArtifactSpec(
+        key="v3_aggregation_defense",
+        response_key="aggregation_defense",
+        file_name="aggregation_defense_panel.json",
+    ),
+    "v3_privacy_defense": ArtifactSpec(
+        key="v3_privacy_defense",
+        response_key="privacy_defense",
+        file_name="privacy_defense_panel.json",
+    ),
+    "v3_model_support": ArtifactSpec(
+        key="v3_model_support",
+        response_key="model_support",
+        file_name="model_support_panel.json",
+    ),
+    "v3_frontend_summary": ArtifactSpec(
+        key="v3_frontend_summary",
+        response_key="frontend_summary",
+        file_name="frontend_summary.json",
+    ),
 }
 
 REPORT_ARTIFACT_KEYS = (
@@ -105,6 +155,39 @@ MATRIX_EXPECTED_ARTIFACT_FILES = (
     ARTIFACT_SPECS["manifest"].file_name,
     *(ARTIFACT_SPECS[key].file_name for key in MATRIX_ARTIFACT_KEYS),
 )
+V3_ARTIFACT_KEYS = (
+    "v3_profile",
+    "v3_runtime",
+    "v3_curves",
+    "v3_target_manipulation",
+    "v3_membership",
+    "v3_update_leakage",
+    "v3_aggregation_defense",
+    "v3_privacy_defense",
+    "v3_model_support",
+    "v3_frontend_summary",
+)
+V3_EXPECTED_ARTIFACT_FILES = tuple(
+    ARTIFACT_SPECS[key].file_name for key in V3_ARTIFACT_KEYS
+)
+V3_ROUTE_PANEL_KEYS: Dict[str, str] = {
+    "profile": "v3_profile",
+    "runtime": "v3_runtime",
+    "curves": "v3_curves",
+    "target-manipulation": "v3_target_manipulation",
+    "membership": "v3_membership",
+    "update-leakage": "v3_update_leakage",
+    "aggregation-defense": "v3_aggregation_defense",
+    "privacy-defense": "v3_privacy_defense",
+    "model-support": "v3_model_support",
+    "frontend-summary": "v3_frontend_summary",
+}
+V3_DIRECTION_PANEL_KEYS: Dict[str, str] = {
+    "recommendation_manipulation": "v3_target_manipulation",
+    "membership_inference": "v3_membership",
+    "update_leakage": "v3_update_leakage",
+    "aggregation_defense": "v3_aggregation_defense",
+}
 
 FRIENDLY_SCENARIOS: Dict[str, Dict[str, Any]] = {
     "mmfedrap_ku_main_showcase": {
@@ -143,6 +226,12 @@ FRIENDLY_SCENARIOS: Dict[str, Dict[str, Any]] = {
         "model": "FedAvg / MMFedRAP / FedRAP / MMFedAvg",
         "tags": ["ModelMatrix", "SecurityCapability", "FrontendLabels"],
     },
+    "amazon_beauty_poc_security_v3": {
+        "name": "Amazon Beauty 安全实验 V3",
+        "dataset": "AMAZON_BEAUTY_POC",
+        "model": "FedAvg",
+        "tags": ["Amazon", "SecurityArtifactV3", "FrontendPanels"],
+    },
 }
 
 RECOMMENDATION_COLUMNS: Dict[str, Tuple[str, Tuple[str, ...]]] = {
@@ -160,6 +249,37 @@ RECOMMENDATION_COLUMNS: Dict[str, Tuple[str, Tuple[str, ...]]] = {
             "defended",
         ),
     ),
+}
+
+STATUS_DISPLAY_LABELS = {
+    "available": "可用",
+    "partial": "部分可用",
+    "configured_only": "仅配置验证",
+    "demo_only": "演示/模拟",
+    "simulation": "模拟",
+    "supported": "支持",
+    "unsupported": "不支持",
+    "future_adapter": "后续适配",
+}
+
+DIRECTION_DISPLAY_LABELS = {
+    "recommendation_manipulation": "推荐操纵",
+    "membership_inference": "成员推断",
+    "update_leakage": "更新泄露",
+    "aggregation_defense": "聚合防御",
+}
+
+V3_PANEL_DISPLAY_TAGS = {
+    "v3_profile": ["场景档案"],
+    "v3_runtime": ["运行时间线"],
+    "v3_curves": ["训练曲线"],
+    "v3_target_manipulation": ["推荐操纵", "目标排序"],
+    "v3_membership": ["成员推断"],
+    "v3_update_leakage": ["更新泄露"],
+    "v3_aggregation_defense": ["聚合防御"],
+    "v3_privacy_defense": ["隐私防御"],
+    "v3_model_support": ["模型支持"],
+    "v3_frontend_summary": ["前端摘要"],
 }
 
 
@@ -245,6 +365,31 @@ class ShowcaseArtifactStore:
             "warnings": [],
         }
 
+    def load_v3_panel(self, scenario_id: str, route_panel_key: str) -> Dict[str, Any]:
+        artifact_key = self._get_v3_artifact_key(route_panel_key)
+        spec = self._get_artifact_spec(artifact_key)
+        scenario_dir = self._get_scenario_dir(scenario_id)
+        result = self._read_artifact(scenario_dir, spec)
+        if result.missing:
+            raise FileNotFoundError(
+                f"{spec.file_name} not found for showcase V3 scenario '{scenario_id}'"
+            )
+        return {
+            "scenario_id": scenario_id,
+            "artifact": spec.response_key,
+            "file": spec.file_name,
+            "data": result.data,
+            "warnings": result.warnings,
+        }
+
+    def load_v3_report(self, scenario_id: str) -> Dict[str, Any]:
+        scenario_dir = self._get_scenario_dir(scenario_id)
+        return self._load_artifact_group_from_dir(
+            scenario_id,
+            scenario_dir,
+            V3_ARTIFACT_KEYS,
+        )
+
     def get_image_path(
         self,
         dataset: str,
@@ -308,16 +453,31 @@ class ShowcaseArtifactStore:
     def _build_scenario_item(self, scenario_dir: Path) -> Dict[str, Any]:
         scenario_id = scenario_dir.name
         scenario_warnings: List[Dict[str, str]] = []
-        manifest = self._read_metadata_artifact(
-            scenario_dir,
-            ARTIFACT_SPECS["manifest"],
-            scenario_warnings,
-        )
-        dataset_profile = self._read_metadata_artifact(
-            scenario_dir,
-            ARTIFACT_SPECS["dataset_profile"],
-            scenario_warnings,
-        )
+        is_v3 = self._is_v3_scenario(scenario_dir)
+        if is_v3:
+            manifest = self._read_metadata_artifact(
+                scenario_dir,
+                ARTIFACT_SPECS["v3_profile"],
+                scenario_warnings,
+            )
+            dataset_profile: Dict[str, Any] = {}
+            frontend_summary = self._read_metadata_artifact(
+                scenario_dir,
+                ARTIFACT_SPECS["v3_frontend_summary"],
+                scenario_warnings,
+            )
+        else:
+            manifest = self._read_metadata_artifact(
+                scenario_dir,
+                ARTIFACT_SPECS["manifest"],
+                scenario_warnings,
+            )
+            dataset_profile = self._read_metadata_artifact(
+                scenario_dir,
+                ARTIFACT_SPECS["dataset_profile"],
+                scenario_warnings,
+            )
+            frontend_summary = {}
 
         missing_files = [
             file_name
@@ -325,9 +485,10 @@ class ShowcaseArtifactStore:
             if not (scenario_dir / file_name).is_file()
         ]
         for file_name in missing_files:
+            missing_code = "missing_panel" if is_v3 else "missing_artifact"
             scenario_warnings.append(
                 self._warning(
-                    "missing_artifact",
+                    missing_code,
                     f"{file_name} is not available for this scenario.",
                     file_name,
                 )
@@ -335,8 +496,15 @@ class ShowcaseArtifactStore:
 
         friendly = FRIENDLY_SCENARIOS.get(scenario_id, {})
         available_files = self._available_files(scenario_dir)
+        available_panels = self._available_v3_panels(scenario_dir)
+        supported_directions = self._supported_v3_directions(
+            scenario_dir,
+            manifest,
+            frontend_summary,
+        )
         name = self._first_string(
             friendly.get("name"),
+            self._lookup_value(manifest, ("display_name",)),
             self._lookup_value(manifest, ("name", "title", "scenario_name")),
             self._humanize_scenario_id(scenario_id),
         )
@@ -378,10 +546,37 @@ class ShowcaseArtifactStore:
             "dataset": dataset,
             "model": model,
             "description": self._first_string(
+                self._lookup_value(frontend_summary, ("headline",)),
                 self._lookup_value(manifest, ("description", "summary")),
                 self._lookup_value(dataset_profile, ("description", "summary")),
             ),
             "tags": tags,
+            "has_v3": is_v3,
+            "available_panels": available_panels,
+            "supported_directions": supported_directions,
+            "has_runtime": self._has_v3_panel(scenario_dir, "v3_runtime"),
+            "has_curves": self._has_v3_panel(scenario_dir, "v3_curves"),
+            "has_target_manipulation": self._has_v3_panel(
+                scenario_dir,
+                "v3_target_manipulation",
+            ),
+            "has_membership": self._has_v3_panel(scenario_dir, "v3_membership"),
+            "has_update_leakage": self._has_v3_panel(
+                scenario_dir,
+                "v3_update_leakage",
+            ),
+            "has_aggregation_defense": self._has_v3_panel(
+                scenario_dir,
+                "v3_aggregation_defense",
+            ),
+            "has_privacy_defense": self._has_v3_panel(
+                scenario_dir,
+                "v3_privacy_defense",
+            ),
+            "has_model_support": self._has_v3_panel(
+                scenario_dir,
+                "v3_model_support",
+            ),
             "is_display_ready": bool(available_files),
             "has_recommendations": (
                 ARTIFACT_SPECS["recommendation_comparison"].file_name
@@ -409,7 +604,7 @@ class ShowcaseArtifactStore:
         warnings.extend(
             warning
             for warning in result.warnings
-            if warning.get("code") != "missing_artifact"
+            if warning.get("code") not in {"missing_artifact", "missing_panel"}
         )
         if result.missing or result.warnings:
             return {}
@@ -432,12 +627,13 @@ class ShowcaseArtifactStore:
     ) -> ArtifactReadResult:
         file_path = scenario_dir / spec.file_name
         if not file_path.is_file():
+            missing_code = "missing_panel" if spec.key in V3_ARTIFACT_KEYS else "missing_artifact"
             return ArtifactReadResult(
                 data=None,
                 missing=True,
                 warnings=[
                     self._warning(
-                        "missing_artifact",
+                        missing_code,
                         f"{spec.file_name} is not available for this scenario.",
                         spec.file_name,
                     )
@@ -448,8 +644,11 @@ class ShowcaseArtifactStore:
             data = self._read_json_file(file_path)
             if preview and spec.key == "recommendation_comparison":
                 data = self._preview_recommendation_payload(data, scenario_dir)
+            public_data = self._publicize_payload(data, scenario_dir)
+            if spec.key in V3_ARTIFACT_KEYS:
+                public_data = self._decorate_v3_payload(public_data, spec)
             return ArtifactReadResult(
-                data=self._publicize_payload(data, scenario_dir),
+                data=public_data,
                 warnings=[],
             )
         except json.JSONDecodeError as exc:
@@ -483,6 +682,12 @@ class ShowcaseArtifactStore:
             return ARTIFACT_SPECS[artifact_key]
         except KeyError as exc:
             raise ValueError(f"Unknown showcase artifact key: {artifact_key}") from exc
+
+    def _get_v3_artifact_key(self, route_panel_key: str) -> str:
+        try:
+            return V3_ROUTE_PANEL_KEYS[route_panel_key]
+        except KeyError as exc:
+            raise ValueError(f"Unknown showcase V3 panel: {route_panel_key}") from exc
 
     def _root_warnings(self) -> List[Dict[str, str]]:
         if not self.artifact_root.exists():
@@ -529,9 +734,14 @@ class ShowcaseArtifactStore:
         return scenario_dir
 
     def _expected_artifact_files(self, scenario_dir: Path) -> Sequence[str]:
+        if self._is_v3_scenario(scenario_dir):
+            return V3_EXPECTED_ARTIFACT_FILES
         if self._is_matrix_scenario(scenario_dir):
             return MATRIX_EXPECTED_ARTIFACT_FILES
         return STANDARD_EXPECTED_ARTIFACT_FILES
+
+    def _is_v3_scenario(self, scenario_dir: Path) -> bool:
+        return any((scenario_dir / ARTIFACT_SPECS[key].file_name).is_file() for key in V3_ARTIFACT_KEYS)
 
     def _is_matrix_scenario(self, scenario_dir: Path) -> bool:
         return (
@@ -553,6 +763,45 @@ class ShowcaseArtifactStore:
 
     def _available_files(self, scenario_dir: Path) -> List[str]:
         return sorted(path.name for path in scenario_dir.iterdir() if path.is_file())
+
+    def _available_v3_panels(self, scenario_dir: Path) -> List[str]:
+        return [
+            ARTIFACT_SPECS[key].response_key
+            for key in V3_ARTIFACT_KEYS
+            if (scenario_dir / ARTIFACT_SPECS[key].file_name).is_file()
+        ]
+
+    def _has_v3_panel(self, scenario_dir: Path, artifact_key: str) -> bool:
+        return (scenario_dir / ARTIFACT_SPECS[artifact_key].file_name).is_file()
+
+    def _supported_v3_directions(
+        self,
+        scenario_dir: Path,
+        profile: Dict[str, Any],
+        frontend_summary: Dict[str, Any],
+    ) -> List[str]:
+        directions = self._coerce_string_list(
+            profile.get("supported_frontend_directions")
+        )
+        if directions:
+            return directions
+
+        direction_cards = frontend_summary.get("direction_cards")
+        if isinstance(direction_cards, list):
+            directions = [
+                direction
+                for card in direction_cards
+                if isinstance(card, dict)
+                if (direction := self._coerce_string(card.get("direction")))
+            ]
+            if directions:
+                return directions
+
+        return [
+            direction
+            for direction, artifact_key in V3_DIRECTION_PANEL_KEYS.items()
+            if self._has_v3_panel(scenario_dir, artifact_key)
+        ]
 
     def _preview_recommendation_payload(self, data: Any, scenario_dir: Path) -> Any:
         if not isinstance(data, dict):
@@ -684,6 +933,7 @@ class ShowcaseArtifactStore:
             public_item.get("id"),
             public_item.get("asin"),
             public_item.get("raw_item_id"),
+            public_item.get("target_item_id"),
         )
         if item_id:
             public_item["item_id"] = item_id
@@ -810,23 +1060,29 @@ class ShowcaseArtifactStore:
                 public_value.get("item_id"),
                 public_value.get("itemID"),
                 public_value.get("itemId"),
-                public_value.get("id"),
-                public_value.get("asin"),
-                public_value.get("raw_item_id"),
-            )
+            public_value.get("id"),
+            public_value.get("asin"),
+            public_value.get("raw_item_id"),
+            public_value.get("target_item_id"),
+        )
             image_info = self._get_image_info(dataset, item_id)
-            if dataset and item_id and image_info:
-                if "local_image_url" not in public_value and image_info.get("full_path"):
+            if dataset and item_id and self._is_safe_path_segment(item_id):
+                if public_value.get("local_image_url") or (
+                    image_info and image_info.get("full_path")
+                ):
                     public_value["local_image_url"] = (
                         f"/showcase/images/{dataset}/{quote(item_id, safe='')}?size=full"
                     )
-                if "thumbnail_url" not in public_value and image_info.get("thumbnail_path"):
+                if public_value.get("thumbnail_url") or (
+                    image_info and image_info.get("thumbnail_path")
+                ):
                     public_value["thumbnail_url"] = (
                         f"/showcase/images/{dataset}/{quote(item_id, safe='')}?size=thumb"
                     )
-                public_value.setdefault("title", image_info.get("title"))
-                public_value.setdefault("category", image_info.get("category"))
-                public_value.setdefault("image_url", image_info.get("image_url"))
+                if image_info:
+                    public_value.setdefault("title", image_info.get("title"))
+                    public_value.setdefault("category", image_info.get("category"))
+                    public_value.setdefault("image_url", image_info.get("image_url"))
             return public_value
 
         if isinstance(value, list):
@@ -851,6 +1107,95 @@ class ShowcaseArtifactStore:
             return path.name
 
         return value.replace("\\", "/")
+
+    def _decorate_v3_payload(self, value: Any, spec: ArtifactSpec) -> Any:
+        if not isinstance(value, dict):
+            return value
+
+        decorated = dict(value)
+        display_status = self._display_status(decorated)
+        if display_status:
+            decorated.setdefault("display_status", display_status)
+
+        display_warning = self._display_warning(decorated)
+        if display_warning:
+            decorated.setdefault("display_warning", display_warning)
+
+        display_tags = self._display_tags(decorated, spec)
+        if display_tags:
+            decorated.setdefault("display_tags", display_tags)
+
+        if spec.key == "v3_frontend_summary":
+            direction_cards = decorated.get("direction_cards")
+            if isinstance(direction_cards, list):
+                decorated["direction_cards"] = [
+                    self._decorate_direction_card(card)
+                    if isinstance(card, dict)
+                    else card
+                    for card in direction_cards
+                ]
+
+        return decorated
+
+    def _decorate_direction_card(self, card: Dict[str, Any]) -> Dict[str, Any]:
+        decorated = dict(card)
+        direction = self._coerce_string(decorated.get("direction"))
+        status = self._coerce_string(decorated.get("status"))
+        if status:
+            decorated.setdefault(
+                "display_status",
+                STATUS_DISPLAY_LABELS.get(status, status),
+            )
+        warning = self._coerce_string(decorated.get("warning"))
+        if warning:
+            decorated.setdefault("display_warning", warning)
+        tags = []
+        if direction:
+            tags.append(DIRECTION_DISPLAY_LABELS.get(direction, direction))
+        if status:
+            tags.append(STATUS_DISPLAY_LABELS.get(status, status))
+        if tags:
+            decorated.setdefault("display_tags", tags)
+        return decorated
+
+    def _display_status(self, payload: Dict[str, Any]) -> str | None:
+        status = self._coerce_string(payload.get("status"))
+        if status:
+            return STATUS_DISPLAY_LABELS.get(status, status)
+        if payload.get("formal_dp_available") is False:
+            return "Formal DP 未提供"
+        return None
+
+    def _display_warning(self, payload: Dict[str, Any]) -> str | None:
+        for key in ("display_warning", "warning", "warnings", "boundary", "limitation", "limitations"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                for item in value:
+                    warning = self._coerce_string(item)
+                    if warning:
+                        return warning
+            else:
+                warning = self._coerce_string(value)
+                if warning:
+                    return warning
+        return None
+
+    def _display_tags(self, payload: Dict[str, Any], spec: ArtifactSpec) -> List[str]:
+        tags = list(V3_PANEL_DISPLAY_TAGS.get(spec.key, []))
+        status = self._coerce_string(payload.get("status"))
+        if status:
+            tags.append(STATUS_DISPLAY_LABELS.get(status, status))
+        evidence_type = self._coerce_string(payload.get("evidence_type"))
+        if evidence_type == "mixed_proxy":
+            tags.append("混合代理证据")
+        if payload.get("formal_dp_available") is False:
+            tags.append("Formal DP 未实现")
+        secure_aggregation = payload.get("secure_aggregation")
+        if isinstance(secure_aggregation, dict) and secure_aggregation.get("demo_only"):
+            tags.append("SecAgg 演示")
+        if payload.get("attack_topk_hit") is False:
+            tags.append("TopK 未命中")
+        return list(dict.fromkeys(tags))
 
     def _infer_dataset(self, scenario_dir: Path) -> str | None:
         scenario_id = scenario_dir.name.lower()

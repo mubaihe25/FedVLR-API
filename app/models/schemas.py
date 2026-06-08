@@ -74,6 +74,17 @@ class ShowcaseScenarioItem(BaseModel):
     has_privacy: bool = False
     has_metrics: bool = False
     has_images: bool = False
+    has_v3: bool = False
+    available_panels: List[str] = Field(default_factory=list)
+    supported_directions: List[str] = Field(default_factory=list)
+    has_runtime: bool = False
+    has_curves: bool = False
+    has_target_manipulation: bool = False
+    has_membership: bool = False
+    has_update_leakage: bool = False
+    has_aggregation_defense: bool = False
+    has_privacy_defense: bool = False
+    has_model_support: bool = False
     warnings: List[ShowcaseWarning] = Field(default_factory=list)
 
 
@@ -111,6 +122,21 @@ class ShowcaseReportResponse(BaseModel):
     supported_demos: Any | None = None
     unsupported_reasons: Any | None = None
     recommended_frontend_labels: Any | None = None
+    warnings: List[ShowcaseWarning] = Field(default_factory=list)
+
+
+class ShowcaseV3ReportResponse(BaseModel):
+    scenario_id: str
+    profile: Any | None = None
+    runtime: Any | None = None
+    curves: Any | None = None
+    target_manipulation: Any | None = None
+    membership: Any | None = None
+    update_leakage: Any | None = None
+    aggregation_defense: Any | None = None
+    privacy_defense: Any | None = None
+    model_support: Any | None = None
+    frontend_summary: Any | None = None
     warnings: List[ShowcaseWarning] = Field(default_factory=list)
 
 
