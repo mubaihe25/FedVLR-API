@@ -99,6 +99,12 @@ The API defaults to `http://127.0.0.1:8000`.
 - `GET /showcase/scenarios/{scenario_id}/v3/model-support`
 - `GET /showcase/scenarios/{scenario_id}/v3/frontend-summary`
 - `GET /showcase/scenarios/{scenario_id}/v3/report`
+- `GET /workbench/options`
+- `POST /workbench/validate`
+- `POST /workbench/jobs`
+- `GET /workbench/jobs/{job_id}`
+- `GET /workbench/jobs/{job_id}/logs?tail=200`
+- `GET /workbench/jobs/{job_id}/result`
 
 ## Experiment Launch
 
@@ -195,6 +201,17 @@ that point to this endpoint when a registered local image exists.
 ## Security Capability Boundary
 
 The current backend exposes capabilities implemented by `FedVLR`: poisoning attacks, robust defenses, and risk observation. Differential privacy, homomorphic encryption, and secure aggregation are not formal implemented capabilities in the current training chain and should only be described as future extensions.
+
+## Workbench Endpoints
+
+`/workbench/*` powers the frontend attack-defense workbench validation flow. It reads `FedVLR/configs/workbench_experiment_schema.json` and calls `FedVLR/scripts/generate_workbench_smoke_config.py` for normalized config generation.
+
+- `GET /workbench/options` returns deduplicated datasets, the eight launchable model choices, adapter-required model notes, robust aggregation options, bounds, defaults, and Amazon target item options.
+- `POST /workbench/validate` validates and normalizes a workbench payload without writing a job.
+- `POST /workbench/jobs` writes a bounded job artifact under `FedVLR/outputs/workbench_jobs/{job_id}` but does not start training.
+- `GET /workbench/jobs/{job_id}`, `/logs`, and `/result` read only that job directory. Job ids are restricted to safe characters and responses avoid local absolute paths.
+
+The current workbench job status is intentionally `disabled` for training launch. It means the config was recorded and the frontend should continue with existing showcase artifacts; it must not be presented as a completed or running training job.
 
 ## Lightweight Validation
 

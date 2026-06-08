@@ -296,6 +296,7 @@ class ShowcaseArtifactStore:
         self.artifact_root = artifact_root.resolve()
         self.amazon_beauty_image_manifest = amazon_beauty_image_manifest.resolve()
         self._image_manifest_cache: Dict[str, Any] | None = None
+        self._image_manifest_has_items_cache: bool | None = None
         self._json_cache: Dict[Path, Tuple[float, Any]] = {}
 
     def list_scenarios(self) -> Dict[str, Any]:
@@ -533,9 +534,7 @@ class ShowcaseArtifactStore:
                 ("model", "model_name", "base_model"),
             ),
         )
-        has_images = dataset == "AMAZON_BEAUTY_POC" and bool(
-            self._load_image_manifest().get("items")
-        )
+        has_images = dataset == "AMAZON_BEAUTY_POC" and self._has_image_manifest_items()
 
         return {
             "id": scenario_id,
@@ -977,16 +976,20 @@ class ShowcaseArtifactStore:
         dataset = self._coerce_string(manifest.get("dataset")) or "AMAZON_BEAUTY_POC"
         output_dir = self._coerce_string(manifest.get("output_dir"))
         image_root = (
-            self._resolve_fedvlr_path(output_dir)
+            self._resolve_manifest_path(output_dir)
             if output_dir
             else self.amazon_beauty_image_manifest.parent
         )
+        if image_root is None:
+            image_root = self.amazon_beauty_image_manifest.parent
         thumbnail_dir = self._coerce_string(manifest.get("thumbnail_dir"))
         thumbnail_root = (
-            self._resolve_fedvlr_path(thumbnail_dir)
+            self._resolve_manifest_path(thumbnail_dir)
             if thumbnail_dir
             else image_root / "thumbs"
         )
+        if thumbnail_root is None:
+            thumbnail_root = image_root / "thumbs"
         items: Dict[str, Dict[str, Any]] = {}
 
         for item in manifest.get("items", []):
@@ -995,20 +998,22 @@ class ShowcaseArtifactStore:
             local_image_path = self._coerce_string(item.get("local_image_path"))
             if not local_image_path:
                 continue
-            image_path = self._resolve_fedvlr_path(local_image_path)
-            if not self._is_within_path(image_path, image_root):
+            image_path = self._resolve_manifest_path(local_image_path)
+            if image_path is None:
                 continue
-            if not self._is_within_path(image_path, self.fedvlr_root):
+            if not self._is_within_resolved_root(image_path, image_root):
+                continue
+            if not self._is_within_resolved_root(image_path, self.fedvlr_root):
                 continue
 
             thumbnail_path: Path | None = None
             thumbnail_value = self._coerce_string(item.get("thumbnail_path"))
             if thumbnail_value:
-                resolved_thumbnail = self._resolve_fedvlr_path(thumbnail_value)
-                if self._is_within_path(
+                resolved_thumbnail = self._resolve_manifest_path(thumbnail_value)
+                if resolved_thumbnail and self._is_within_resolved_root(
                     resolved_thumbnail,
                     thumbnail_root,
-                ) and self._is_within_path(resolved_thumbnail, self.fedvlr_root):
+                ) and self._is_within_resolved_root(resolved_thumbnail, self.fedvlr_root):
                     thumbnail_path = resolved_thumbnail
 
             image_info = {
@@ -1031,6 +1036,40 @@ class ShowcaseArtifactStore:
 
         self._image_manifest_cache = {"dataset": dataset, "items": items}
         return self._image_manifest_cache
+
+    def _has_image_manifest_items(self) -> bool:
+        if self._image_manifest_has_items_cache is not None:
+            return self._image_manifest_has_items_cache
+        if not self.amazon_beauty_image_manifest.is_file():
+            self._image_manifest_has_items_cache = False
+            return self._image_manifest_has_items_cache
+        try:
+            with open(self.amazon_beauty_image_manifest, "r", encoding="utf-8") as file:
+                manifest = json.load(file)
+        except (OSError, json.JSONDecodeError):
+            self._image_manifest_has_items_cache = False
+            return self._image_manifest_has_items_cache
+        items = manifest.get("items") if isinstance(manifest, dict) else None
+        self._image_manifest_has_items_cache = bool(items)
+        return self._image_manifest_has_items_cache
+
+    def _resolve_manifest_path(self, value: str) -> Path | None:
+        path = Path(value).expanduser()
+        if ".." in path.parts:
+            return None
+        if path.is_absolute():
+            resolved_path = path.resolve()
+            if self._is_within_resolved_root(resolved_path, self.fedvlr_root):
+                return resolved_path
+            return None
+        return self.fedvlr_root / path
+
+    def _is_within_resolved_root(self, path: Path, root: Path) -> bool:
+        try:
+            path.relative_to(root)
+        except ValueError:
+            return False
+        return True
 
     def _get_image_info(
         self,

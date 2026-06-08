@@ -4,6 +4,7 @@ from app.routes.capabilities import router as capabilities_router
 from app.routes.experiments import router as experiments_router
 from app.routes.health import router as health_router
 from app.routes.showcase import router as showcase_router
+from app.routes.workbench import router as workbench_router
 
 
 app = FastAPI(
@@ -16,3 +17,4 @@ app.include_router(health_router)
 app.include_router(capabilities_router)
 app.include_router(experiments_router)
 app.include_router(showcase_router)
+app.include_router(workbench_router)
