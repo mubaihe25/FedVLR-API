@@ -50,7 +50,9 @@ python -m compileall -q app
 ## Workbench API Notes
 
 - `/workbench/options`、`/workbench/validate`、`/workbench/jobs`、`/workbench/jobs/{job_id}`、`/workbench/jobs/{job_id}/logs` 和 `/workbench/jobs/{job_id}/result` 是前端攻防工作台的受限联动接口。
-- 这些端点包装 `FedVLR/scripts/generate_workbench_smoke_config.py`，只允许写入 `FedVLR/outputs/workbench_jobs/{job_id}`。
-- 当前 `/workbench/jobs` 不启动真实训练，状态应如实保持为 `disabled` / 待接入训练任务；前端应继续读取既有 showcase 证据。
+- 这些端点包装 `FedVLR/scripts/generate_workbench_smoke_config.py` 和白名单 runner `FedVLR/scripts/run_workbench_smoke_job.py`，只允许写入 `FedVLR/outputs/workbench_jobs/{job_id}`。
+- `/workbench/jobs` 可以启动受限 smoke 子进程，返回 `queued` / `running` / `completed` / `partial` / `failed`。它不是生产队列，也不能执行前端传来的任意命令。
+- `source=real_smoke` 只表示 FedVLR 白名单 1 epoch smoke 已执行；它不是长训练或完整 defense benchmark。
+- 复用既有 V3 证据时必须返回 `source=existing_artifact`；聚合防御只有 config-only evidence 时可以返回 `partial`，不能伪造成完整 defense benchmark。
 - `job_id` 必须是安全路径片段，响应不要暴露本地绝对路径或私有运行参数。
 - Workbench 模型列表必须保持 MGCN 系列为 adapter-required，直到 FedVLR 侧有真实 trainer/import 验证。
