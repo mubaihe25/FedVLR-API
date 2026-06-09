@@ -206,14 +206,14 @@ The current backend exposes capabilities implemented by `FedVLR`: poisoning atta
 
 `/workbench/*` powers the frontend attack-defense workbench validation and bounded smoke-job flow. It reads `FedVLR/configs/workbench_experiment_schema.json`, calls `FedVLR/scripts/generate_workbench_smoke_config.py` for normalized config generation, and starts only the whitelisted `FedVLR/scripts/run_workbench_smoke_job.py` runner.
 
-- `GET /workbench/options` returns canonical datasets, the eight launchable model choices, adapter-required model notes, robust aggregation options, direction/defense parameter groups, compatibility matrix, bounds, defaults, and Amazon target item options with Chinese display fields.
+- `GET /workbench/options` returns canonical datasets, execution modes, the eight launchable model choices, adapter-required model notes, robust aggregation options, direction/defense parameter groups, compatibility matrix, model/dataset execution capability hints, parameter descriptors, bounds, defaults, and Amazon target item options with Chinese display fields.
 - `POST /workbench/validate` validates and normalizes a workbench payload without writing a job. Invalid payloads include `field_errors` so the frontend can point at dataset/model/aggregation/robust parameter issues.
 - `POST /workbench/jobs` writes a bounded job artifact under `FedVLR/outputs/workbench_jobs/{job_id}` and launches a restricted background smoke process with `subprocess.Popen`; invalid payloads return `launch_enabled=false` plus a clear `error_message`.
-- `GET /workbench/jobs/{job_id}` returns `status`, `stage`, `progress`, timestamps, `error_message`, relative result/artifact pointers, and `source`.
+- `GET /workbench/jobs/{job_id}` returns `status`, `stage`, `progress`, timestamps, `execution_mode`, `requested_execution_mode`, `error_message`, relative result/artifact pointers, `source`, and a config summary.
 - `GET /workbench/jobs/{job_id}/logs?tail=200` returns the tail of `run.log`; a missing log file for an existing job returns an empty list.
 - `GET /workbench/jobs/{job_id}/result` reads `metrics_summary.json` and `result_pointer.json` when available. Job ids are restricted to safe characters and responses avoid local absolute paths.
 
-Workbench jobs are still bounded smoke jobs, not a production queue. Some directions reuse existing V3 artifacts and must return `source=existing_artifact`; aggregation defense on KU with FedAvg/FedRAP can return `source=real_smoke` after a white-listed 1-epoch launcher run. Aggregation defense can still return `partial` when only config-only evidence exists. Do not present artifact reuse or smoke warnings as a full benchmark.
+Workbench jobs are still bounded smoke jobs, not a production queue. `execution_mode=existing_artifact` must return `source=existing_artifact`; supported white-listed real smoke paths can return `source=real_smoke`; membership inference and update leakage can return `source=probe_smoke` when a real-smoke request is normalized to a lightweight probe/result回填 path. Recommendation manipulation on Amazon Beauty with FedAvg and aggregation defense on KU with FedAvg/FedRAP are the current real-smoke paths. Aggregation defense can still return `partial` when only config-only evidence exists. Do not present artifact reuse, probe smoke, or smoke warnings as a full benchmark.
 
 ## Lightweight Validation
 
