@@ -206,9 +206,9 @@ The current backend exposes capabilities implemented by `FedVLR`: poisoning atta
 
 `/workbench/*` powers the frontend attack-defense workbench validation and bounded smoke-job flow. It reads `FedVLR/configs/workbench_experiment_schema.json`, calls `FedVLR/scripts/generate_workbench_smoke_config.py` for normalized config generation, and starts only the whitelisted `FedVLR/scripts/run_workbench_smoke_job.py` runner.
 
-- `GET /workbench/options` returns deduplicated datasets, the eight launchable model choices, adapter-required model notes, robust aggregation options, bounds, defaults, and Amazon target item options.
-- `POST /workbench/validate` validates and normalizes a workbench payload without writing a job.
-- `POST /workbench/jobs` writes a bounded job artifact under `FedVLR/outputs/workbench_jobs/{job_id}` and launches a restricted background smoke process with `subprocess.Popen`.
+- `GET /workbench/options` returns canonical datasets, the eight launchable model choices, adapter-required model notes, robust aggregation options, direction/defense parameter groups, compatibility matrix, bounds, defaults, and Amazon target item options with Chinese display fields.
+- `POST /workbench/validate` validates and normalizes a workbench payload without writing a job. Invalid payloads include `field_errors` so the frontend can point at dataset/model/aggregation/robust parameter issues.
+- `POST /workbench/jobs` writes a bounded job artifact under `FedVLR/outputs/workbench_jobs/{job_id}` and launches a restricted background smoke process with `subprocess.Popen`; invalid payloads return `launch_enabled=false` plus a clear `error_message`.
 - `GET /workbench/jobs/{job_id}` returns `status`, `stage`, `progress`, timestamps, `error_message`, relative result/artifact pointers, and `source`.
 - `GET /workbench/jobs/{job_id}/logs?tail=200` returns the tail of `run.log`; a missing log file for an existing job returns an empty list.
 - `GET /workbench/jobs/{job_id}/result` reads `metrics_summary.json` and `result_pointer.json` when available. Job ids are restricted to safe characters and responses avoid local absolute paths.

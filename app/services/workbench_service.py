@@ -103,8 +103,15 @@ class WorkbenchService:
         response = module.validation_response(payload)
         response["source"] = "fedvlr_workbench_generator"
         if not response.get("valid"):
+            field_messages = []
+            field_errors = response.get("field_errors") or {}
+            if isinstance(field_errors, dict):
+                for field, messages in field_errors.items():
+                    if isinstance(messages, list):
+                        field_messages.extend(f"{field}: {message}" for message in messages)
             response["launch_enabled"] = False
             response["message"] = "配置未通过校验，未创建 smoke job。"
+            response["error_message"] = "；".join([*field_messages, *(str(item) for item in response.get("errors", []))]) or "配置未通过校验。"
             return response
 
         job_id = module.safe_job_id(str(payload.get("job_id")) if payload.get("job_id") else None)
