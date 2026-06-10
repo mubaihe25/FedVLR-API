@@ -49,13 +49,14 @@ python -m compileall -q app
 
 ## Workbench API Notes
 
-- `/workbench/options`、`/workbench/validate`、`/workbench/jobs`、`/workbench/jobs/{job_id}`、`/workbench/jobs/{job_id}/logs` 和 `/workbench/jobs/{job_id}/result` 是前端攻防工作台的受限联动接口。
+- `/workbench/options`、`/workbench/validate`、`/workbench/jobs`、`/workbench/jobs?limit=12&page=...`、`/workbench/jobs/{job_id}`、`/workbench/jobs/{job_id}/logs` 和 `/workbench/jobs/{job_id}/result` 是前端攻防工作台的受限联动接口。
 - 这些端点包装 `FedVLR/scripts/generate_workbench_smoke_config.py` 和白名单 runner `FedVLR/scripts/run_workbench_smoke_job.py`，只允许写入 `FedVLR/outputs/workbench_jobs/{job_id}`。
 - `/workbench/jobs` 可以启动受限 smoke 子进程，返回 `queued` / `running` / `completed` / `partial` / `failed`。它不是生产队列，也不能执行前端传来的任意命令。
+- `GET /workbench/jobs?limit=12&page=...` 必须从 `FedVLR/outputs/workbench_jobs` 读取 job 档案，返回 `job_id`、`direction`、`dataset`、`model`、`execution_mode`、`source`、`status`、时间戳、`key_metrics` 和相对路径，不暴露本地绝对路径。
 - `/workbench/options` 必须保持 canonical：只返回 `AMAZON_BEAUTY_POC`、`KU` 两个启动数据集和 8 个可启动模型，同时返回 `execution_modes`、`direction_parameters`、`defense_parameters`、`compatibility_matrix`、`model_dataset_execution`、`parameter_descriptors` 以及目标商品的中文展示字段。`compatibility_matrix` 表示可进入配置，不等同于可真实 smoke。
 - `/workbench/validate` 和 invalid `/workbench/jobs` 响应应保留 `field_errors`；`error_message` 要合并关键字段错误，方便前端展示启动失败原因。
 - `source=real_smoke` 只表示 FedVLR 白名单 1 epoch smoke 已执行；它不是长训练或完整 defense benchmark。当前真实 smoke 路径包括 Amazon Beauty + FedAvg 的推荐操纵 smoke，以及 KU + FedAvg/FedRAP 的聚合防御 smoke。
-- 复用既有 V3 证据时必须返回 `source=existing_artifact`；成员推断或更新泄露被降级为轻量 probe 时必须返回 `source=probe_smoke`；聚合防御只有 config-only evidence 时可以返回 `partial`，不能伪造成完整 defense benchmark。
-- `/workbench/jobs/{job_id}` 状态应带回 `execution_mode`、`requested_execution_mode` 和 config summary，方便前端区分复用证据、真实轻量 smoke 和 probe smoke。
+- 复用既有 V3 证据时必须返回 `source=existing_artifact`；只有用户显式请求 `execution_mode=probe_smoke` 时才能返回 `source=probe_smoke`；用户请求 `real_smoke` 但组合不支持时必须返回校验失败原因，不能静默降级成 probe 或复用证据。聚合防御只有 config-only evidence 时可以返回 `partial`，不能伪造成完整 defense benchmark。
+- `/workbench/jobs/{job_id}` 状态应带回 `direction`、`dataset`、`model`、`execution_mode`、`requested_execution_mode` 和 config summary，方便前端区分复用证据、真实轻量 smoke 和 probe smoke。
 - `job_id` 必须是安全路径片段，响应不要暴露本地绝对路径或私有运行参数。
 - Workbench 模型列表必须保持 MGCN 系列为 adapter-required，直到 FedVLR 侧有真实 trainer/import 验证。

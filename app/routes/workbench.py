@@ -35,6 +35,32 @@ def validate_workbench_config(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+@router.get("/jobs")
+def list_workbench_jobs(
+    limit: int = Query(12, ge=1, le=100),
+    page: int = Query(1, ge=1),
+    direction: str = "",
+    dataset: str = "",
+    model: str = "",
+    source: str = "",
+    status: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    service: WorkbenchService = Depends(get_workbench_service),
+) -> Dict[str, Any]:
+    return service.list_jobs(
+        limit=limit,
+        page=page,
+        direction=direction,
+        dataset=dataset,
+        model=model,
+        source=source,
+        status=status,
+        date_from=date_from,
+        date_to=date_to,
+    )
+
+
 @router.post("/jobs")
 def create_workbench_job(
     payload: Dict[str, Any] = Body(default_factory=dict),

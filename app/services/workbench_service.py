@@ -74,6 +74,64 @@ class WorkbenchService:
         except ValueError:
             return None
 
+    def _job_config_summary(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "model": config.get("model"),
+            "dataset": config.get("dataset"),
+            "execution_mode": config.get("execution_mode"),
+            "requested_execution_mode": config.get("requested_execution_mode"),
+            "execution_capability": config.get("execution_capability"),
+            "aggregation_mode": config.get("aggregation_mode"),
+            "robust_aggregators": config.get("robust_aggregators", []),
+            "dp_noise_enabled": config.get("dp_noise_enabled"),
+        }
+
+    def _date_matches(self, value: str | None, date_from: str = "", date_to: str = "") -> bool:
+        if not value:
+            return not date_from and not date_to
+        day = value[:10]
+        if date_from and day < date_from:
+            return False
+        if date_to and day > date_to:
+            return False
+        return True
+
+    def _compact_metrics(self, metrics_summary: Dict[str, Any] | None) -> Dict[str, Any]:
+        if not isinstance(metrics_summary, dict):
+            return {}
+        metrics = metrics_summary.get("metrics")
+        if not isinstance(metrics, dict):
+            metrics = metrics_summary
+        keep = [
+            "baseline_unmasked_rank",
+            "attack_unmasked_rank",
+            "rank_gain",
+            "attack_topk_hit",
+            "target_manipulation_index",
+            "recommendation_jaccard",
+            "auc",
+            "accuracy",
+            "score_gap",
+            "evidence_type",
+            "hit_at_10",
+            "hit_at_20",
+            "hit_at_50",
+            "highest_risk_modality",
+            "recall_at_50",
+            "ndcg_at_50",
+            "defense_algorithm",
+            "recovery_rate_recall",
+            "recovery_rate_ndcg",
+            "selected_client_count",
+            "rejected_client_count",
+        ]
+        compact: Dict[str, Any] = {}
+        for key in keep:
+            value = metrics.get(key)
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                compact[key] = value
+        return {key: value for key, value in compact.items() if value is not None}
+
     def _workbench_python(self) -> Path | str:
         env_path = os.getenv("FEDVLR_PYTHON")
         if env_path:
@@ -197,6 +255,7 @@ class WorkbenchService:
         job_dir = self._safe_job_dir(job_id)
         status = self._read_json(job_dir / "status.json")
         config = self._read_json(job_dir / "config.json") if (job_dir / "config.json").exists() else {}
+        config_summary = self._job_config_summary(config)
         return {
             "job_id": job_id,
             "status": status.get("status"),
@@ -208,6 +267,8 @@ class WorkbenchService:
             "started_at": status.get("started_at"),
             "finished_at": status.get("finished_at"),
             "direction": status.get("direction"),
+            "dataset": config.get("dataset"),
+            "model": config.get("model"),
             "execution_mode": status.get("execution_mode") or config.get("execution_mode"),
             "requested_execution_mode": status.get("requested_execution_mode") or config.get("requested_execution_mode"),
             "scenario_id": status.get("scenario_id"),
@@ -218,16 +279,77 @@ class WorkbenchService:
             "source": status.get("source"),
             "warnings": status.get("warnings", []),
             "errors": status.get("errors", []),
-            "config_summary": {
-                "model": config.get("model"),
+            "config_summary": config_summary,
+        }
+
+    def list_jobs(
+        self,
+        *,
+        limit: int = 12,
+        page: int = 1,
+        direction: str = "",
+        dataset: str = "",
+        model: str = "",
+        source: str = "",
+        status: str = "",
+        date_from: str = "",
+        date_to: str = "",
+    ) -> Dict[str, Any]:
+        self.output_root.mkdir(parents=True, exist_ok=True)
+        bounded_limit = max(1, min(int(limit), 100))
+        bounded_page = max(1, int(page))
+        items = []
+        for job_dir in self.output_root.iterdir():
+            if not job_dir.is_dir():
+                continue
+            status_path = job_dir / "status.json"
+            if not status_path.exists():
+                continue
+            try:
+                status_payload = self._read_json(status_path)
+            except (FileNotFoundError, json.JSONDecodeError):
+                continue
+            config = self._read_json(job_dir / "config.json") if (job_dir / "config.json").exists() else {}
+            metrics_summary = self._read_json(job_dir / "metrics_summary.json") if (job_dir / "metrics_summary.json").exists() else {}
+            item = {
+                "job_id": str(status_payload.get("job_id") or job_dir.name),
+                "direction": status_payload.get("direction") or config.get("direction"),
                 "dataset": config.get("dataset"),
-                "execution_mode": config.get("execution_mode"),
-                "requested_execution_mode": config.get("requested_execution_mode"),
-                "execution_capability": config.get("execution_capability"),
-                "aggregation_mode": config.get("aggregation_mode"),
-                "robust_aggregators": config.get("robust_aggregators", []),
-                "dp_noise_enabled": config.get("dp_noise_enabled"),
-            },
+                "model": config.get("model"),
+                "execution_mode": status_payload.get("execution_mode") or config.get("execution_mode"),
+                "requested_execution_mode": status_payload.get("requested_execution_mode") or config.get("requested_execution_mode"),
+                "source": status_payload.get("source") or metrics_summary.get("source"),
+                "status": status_payload.get("status"),
+                "created_at": status_payload.get("created_at"),
+                "started_at": status_payload.get("started_at"),
+                "finished_at": status_payload.get("finished_at"),
+                "key_metrics": self._compact_metrics(metrics_summary),
+                "result_dir": status_payload.get("result_dir"),
+                "artifact_dir": status_payload.get("artifact_dir"),
+            }
+            if direction and item["direction"] != direction:
+                continue
+            if dataset and item["dataset"] != dataset:
+                continue
+            if model and item["model"] != model:
+                continue
+            if source and item["source"] != source:
+                continue
+            if status and item["status"] != status:
+                continue
+            if not self._date_matches(str(item.get("created_at") or ""), date_from=date_from, date_to=date_to):
+                continue
+            items.append(item)
+        items.sort(key=lambda item: str(item.get("created_at") or item.get("job_id") or ""), reverse=True)
+        total = len(items)
+        start = (bounded_page - 1) * bounded_limit
+        end = start + bounded_limit
+        return {
+            "items": items[start:end],
+            "page": bounded_page,
+            "limit": bounded_limit,
+            "total": total,
+            "total_pages": max(1, (total + bounded_limit - 1) // bounded_limit),
         }
 
     def get_logs(self, job_id: str, tail: int = 200) -> Dict[str, Any]:
