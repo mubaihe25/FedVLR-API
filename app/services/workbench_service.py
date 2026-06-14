@@ -16,12 +16,18 @@ from app.core.settings import Settings, get_settings
 
 
 SAFE_JOB_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
+WORKBENCH_DIRECTION_LABELS = {
+    "recommendation_manipulation": "推荐操纵",
+    "membership_inference": "成员推断",
+    "update_leakage": "更新泄露",
+    "aggregation_defense": "聚合防御",
+}
 
 
 class WorkbenchService:
-    """Wrapper around FedVLR bounded workbench smoke jobs.
+    """Wrapper around FedVLR workbench full-training jobs.
 
-    The only launch path is the whitelisted FedVLR smoke runner. Frontend
+    The only launch path is the whitelisted FedVLR workbench runner. Frontend
     payloads are validated by the FedVLR schema generator and are never treated
     as shell commands.
     """
@@ -66,6 +72,31 @@ class WorkbenchService:
     def _utc_now(self) -> str:
         return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
+    def _build_job_metadata(self, payload: Dict[str, Any], direction: str | None, fallback_started_at: str) -> Dict[str, str]:
+        raw_started_at = str(payload.get("started_at") or fallback_started_at).strip()
+        try:
+            started_at_value = datetime.fromisoformat(raw_started_at.replace("Z", "+00:00"))
+        except ValueError:
+            started_at_value = datetime.fromisoformat(fallback_started_at.replace("Z", "+00:00"))
+        if started_at_value.tzinfo is None:
+            started_at_value = started_at_value.astimezone()
+        started_at_value = started_at_value.replace(microsecond=0)
+        direction_label = WORKBENCH_DIRECTION_LABELS.get(str(direction), str(direction or "实验"))
+        return {
+            "experiment_name": f"{direction_label} · {started_at_value.strftime('%Y-%m-%d %H:%M:%S')}",
+            "started_at": started_at_value.isoformat(),
+        }
+
+    def _read_job_metadata(self, job_dir: Path) -> Dict[str, Any]:
+        metadata_path = job_dir / "metadata.json"
+        if not metadata_path.exists():
+            return {}
+        try:
+            metadata = self._read_json(metadata_path)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+        return metadata if isinstance(metadata, dict) else {}
+
     def _repo_relative(self, path: Path | None) -> str | None:
         if path is None:
             return None
@@ -95,6 +126,25 @@ class WorkbenchService:
         if date_to and day > date_to:
             return False
         return True
+
+    def _parse_job_started_at(self, value: Any) -> datetime | None:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+    def _is_test_job(self, job_id: str, experiment_name: Any) -> bool:
+        normalized_job_id = job_id.strip().lower()
+        normalized_name = str(experiment_name or "").strip().lower()
+        return (
+            "test" in normalized_job_id
+            or "test" in normalized_name
+            or normalized_job_id.startswith("codex_")
+            or normalized_name.startswith("codex_")
+        )
 
     def _compact_metrics(self, metrics_summary: Dict[str, Any] | None) -> Dict[str, Any]:
         if not isinstance(metrics_summary, dict):
@@ -149,16 +199,20 @@ class WorkbenchService:
 
     def validate(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         module = self._load_generator()
-        response = module.validation_response(payload)
+        normalized_payload = dict(payload)
+        normalized_payload.setdefault("execution_mode", "full_train")
+        response = module.validation_response(normalized_payload)
         response["source"] = "fedvlr_workbench_generator"
         return response
 
     def create_job(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         module = self._load_generator()
         if not self.runner_path.exists():
-            raise FileNotFoundError("FedVLR workbench smoke runner is missing")
+            raise FileNotFoundError("FedVLR workbench runner is missing")
 
-        response = module.validation_response(payload)
+        normalized_payload = dict(payload)
+        normalized_payload.setdefault("execution_mode", "full_train")
+        response = module.validation_response(normalized_payload)
         response["source"] = "fedvlr_workbench_generator"
         if not response.get("valid"):
             field_messages = []
@@ -168,7 +222,7 @@ class WorkbenchService:
                     if isinstance(messages, list):
                         field_messages.extend(f"{field}: {message}" for message in messages)
             response["launch_enabled"] = False
-            response["message"] = "配置未通过校验，未创建 smoke job。"
+            response["message"] = "配置未通过校验，未创建全量训练任务。"
             response["error_message"] = "；".join([*field_messages, *(str(item) for item in response.get("errors", []))]) or "配置未通过校验。"
             return response
 
@@ -177,9 +231,13 @@ class WorkbenchService:
         job_dir.mkdir(parents=True, exist_ok=True)
         created_at = self._utc_now()
         payload_path = job_dir / "payload.json"
+        normalized_config = response.get("normalized_config", {})
+        metadata = self._build_job_metadata(normalized_payload, normalized_config.get("direction"), created_at)
+        normalized_payload.update(metadata)
 
-        self._write_json(payload_path, payload)
-        self._write_json(job_dir / "config.json", response.get("normalized_config", {}))
+        self._write_json(payload_path, normalized_payload)
+        self._write_json(job_dir / "config.json", normalized_config)
+        self._write_json(job_dir / "metadata.json", metadata)
         self._write_json(
             job_dir / "status.json",
             {
@@ -190,17 +248,24 @@ class WorkbenchService:
                 "valid": True,
                 "created_at": created_at,
                 "updated_at": created_at,
-                "started_at": None,
+                "started_at": metadata["started_at"],
                 "finished_at": None,
-                "direction": response.get("normalized_config", {}).get("direction"),
-                "execution_mode": response.get("normalized_config", {}).get("execution_mode"),
-                "requested_execution_mode": response.get("normalized_config", {}).get("requested_execution_mode"),
-                "scenario_id": response.get("normalized_config", {}).get("scenario_id"),
-                "message": "受限 smoke job 已进入队列。",
+                "experiment_name": metadata["experiment_name"],
+                "direction": normalized_config.get("direction"),
+                "execution_mode": normalized_config.get("execution_mode"),
+                "requested_execution_mode": normalized_config.get("requested_execution_mode"),
+                "scenario_id": normalized_config.get("scenario_id"),
+                "message": "真实全量训练任务已进入队列。",
                 "error_message": None,
                 "result_dir": None,
                 "artifact_dir": None,
                 "source": None,
+                "runner_pid": None,
+                "pid": None,
+                "return_code": None,
+                "subprocess_command": None,
+                "python_path": str(self._workbench_python()),
+                "cwd": str(self.settings.fedvlr_root),
                 "warnings": response.get("warnings", []),
                 "errors": [],
             },
@@ -227,6 +292,17 @@ class WorkbenchService:
             close_fds=True,
             creationflags=creationflags,
         )
+        status_payload = self._read_json(job_dir / "status.json")
+        status_payload.update(
+            {
+                "runner_pid": process.pid,
+                "runner_command": subprocess.list2cmdline(command),
+                "python_path": str(self._workbench_python()),
+                "cwd": str(self.settings.fedvlr_root),
+                "updated_at": self._utc_now(),
+            }
+        )
+        self._write_json(job_dir / "status.json", status_payload)
 
         response.update(
             {
@@ -235,13 +311,16 @@ class WorkbenchService:
                 "status": "queued",
                 "stage": "queued",
                 "progress": 0,
+                "experiment_name": metadata["experiment_name"],
+                "started_at": metadata["started_at"],
                 "job_dir": self._repo_relative(job_dir),
                 "pid": process.pid,
                 "launch_enabled": True,
-                "message": "已启动受限 smoke job，正在准备配置。",
+                "message": "已启动真实全量训练任务，正在准备配置。",
                 "files": {
                     "payload": "payload.json",
                     "config": "config.json",
+                    "metadata": "metadata.json",
                     "status": "status.json",
                     "log": "run.log",
                     "result_pointer": "result_pointer.json",
@@ -255,6 +334,7 @@ class WorkbenchService:
         job_dir = self._safe_job_dir(job_id)
         status = self._read_json(job_dir / "status.json")
         config = self._read_json(job_dir / "config.json") if (job_dir / "config.json").exists() else {}
+        metadata = self._read_job_metadata(job_dir)
         config_summary = self._job_config_summary(config)
         return {
             "job_id": job_id,
@@ -264,8 +344,9 @@ class WorkbenchService:
             "valid": status.get("valid"),
             "created_at": status.get("created_at"),
             "updated_at": status.get("updated_at"),
-            "started_at": status.get("started_at"),
+            "started_at": metadata.get("started_at") or status.get("started_at"),
             "finished_at": status.get("finished_at"),
+            "experiment_name": metadata.get("experiment_name") or status.get("experiment_name"),
             "direction": status.get("direction"),
             "dataset": config.get("dataset"),
             "model": config.get("model"),
@@ -274,6 +355,15 @@ class WorkbenchService:
             "scenario_id": status.get("scenario_id"),
             "message": status.get("message"),
             "error_message": status.get("error_message"),
+            "error_summary": status.get("error_summary"),
+            "error_detail": status.get("error_detail"),
+            "failure_stage": status.get("failure_stage"),
+            "runner_pid": status.get("runner_pid"),
+            "pid": status.get("pid"),
+            "return_code": status.get("return_code"),
+            "subprocess_command": status.get("subprocess_command"),
+            "python_path": status.get("python_path"),
+            "cwd": status.get("cwd"),
             "result_dir": status.get("result_dir"),
             "artifact_dir": status.get("artifact_dir"),
             "source": status.get("source"),
@@ -310,9 +400,17 @@ class WorkbenchService:
             except (FileNotFoundError, json.JSONDecodeError):
                 continue
             config = self._read_json(job_dir / "config.json") if (job_dir / "config.json").exists() else {}
+            metadata = self._read_job_metadata(job_dir)
             metrics_summary = self._read_json(job_dir / "metrics_summary.json") if (job_dir / "metrics_summary.json").exists() else {}
+            job_id = str(status_payload.get("job_id") or job_dir.name)
+            experiment_name = metadata.get("experiment_name") or status_payload.get("experiment_name")
+            started_at = metadata.get("started_at") or status_payload.get("started_at")
+            parsed_started_at = self._parse_job_started_at(started_at)
+            if self._is_test_job(job_id, experiment_name) or parsed_started_at is None:
+                continue
             item = {
-                "job_id": str(status_payload.get("job_id") or job_dir.name),
+                "job_id": job_id,
+                "experiment_name": experiment_name,
                 "direction": status_payload.get("direction") or config.get("direction"),
                 "dataset": config.get("dataset"),
                 "model": config.get("model"),
@@ -321,8 +419,12 @@ class WorkbenchService:
                 "source": status_payload.get("source") or metrics_summary.get("source"),
                 "status": status_payload.get("status"),
                 "created_at": status_payload.get("created_at"),
-                "started_at": status_payload.get("started_at"),
+                "started_at": started_at,
                 "finished_at": status_payload.get("finished_at"),
+                "failure_stage": status_payload.get("failure_stage"),
+                "error_summary": status_payload.get("error_summary"),
+                "error_detail": status_payload.get("error_detail"),
+                "return_code": status_payload.get("return_code"),
                 "key_metrics": self._compact_metrics(metrics_summary),
                 "result_dir": status_payload.get("result_dir"),
                 "artifact_dir": status_payload.get("artifact_dir"),
@@ -337,15 +439,16 @@ class WorkbenchService:
                 continue
             if status and item["status"] != status:
                 continue
-            if not self._date_matches(str(item.get("created_at") or ""), date_from=date_from, date_to=date_to):
+            if not self._date_matches(str(item.get("started_at") or item.get("created_at") or ""), date_from=date_from, date_to=date_to):
                 continue
-            items.append(item)
-        items.sort(key=lambda item: str(item.get("created_at") or item.get("job_id") or ""), reverse=True)
-        total = len(items)
+            items.append((parsed_started_at, item))
+        items.sort(key=lambda entry: entry[0], reverse=True)
+        sorted_items = [item for _, item in items]
+        total = len(sorted_items)
         start = (bounded_page - 1) * bounded_limit
         end = start + bounded_limit
         return {
-            "items": items[start:end],
+            "items": sorted_items[start:end],
             "page": bounded_page,
             "limit": bounded_limit,
             "total": total,
@@ -385,7 +488,7 @@ class WorkbenchService:
             "source": (pointer or {}).get("source") or status.get("source"),
             "result_pointer": pointer,
             "metrics_summary": metrics,
-            "message": "结果来自受限 smoke job；source=existing_artifact 时表示复用已导出的证据。",
+            "message": "结果来自真实全量训练任务。",
         }
 
 

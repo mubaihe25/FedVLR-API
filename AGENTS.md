@@ -51,12 +51,15 @@ python -m compileall -q app
 
 - `/workbench/options`、`/workbench/validate`、`/workbench/jobs`、`/workbench/jobs?limit=12&page=...`、`/workbench/jobs/{job_id}`、`/workbench/jobs/{job_id}/logs` 和 `/workbench/jobs/{job_id}/result` 是前端攻防工作台的受限联动接口。
 - 这些端点包装 `FedVLR/scripts/generate_workbench_smoke_config.py` 和白名单 runner `FedVLR/scripts/run_workbench_smoke_job.py`，只允许写入 `FedVLR/outputs/workbench_jobs/{job_id}`。
-- `/workbench/jobs` 可以启动受限 smoke 子进程，返回 `queued` / `running` / `completed` / `partial` / `failed`。它不是生产队列，也不能执行前端传来的任意命令。
-- `GET /workbench/jobs?limit=12&page=...` 必须从 `FedVLR/outputs/workbench_jobs` 读取 job 档案，返回 `job_id`、`direction`、`dataset`、`model`、`execution_mode`、`source`、`status`、时间戳、`key_metrics` 和相对路径，不暴露本地绝对路径。
-- `/workbench/options` 必须保持 canonical：只返回 `AMAZON_BEAUTY_POC`、`KU` 两个启动数据集和 8 个可启动模型，同时返回 `execution_modes`、`direction_parameters`、`defense_parameters`、`compatibility_matrix`、`model_dataset_execution`、`parameter_descriptors` 以及目标商品的中文展示字段。`compatibility_matrix` 表示可进入配置，不等同于可真实 smoke。
+- `/workbench/jobs` 可以启动真实全量训练子进程，返回 `queued` / `running` / `completed` / `partial` / `failed`。它不是生产队列，也不能执行前端传来的任意命令。
+- 新 job 必须把点击“开始实验”时的 `started_at` 和规范中文 `experiment_name` 写入独立 `metadata.json`；名称格式为 `{推荐操纵|成员推断|更新泄露|聚合防御} · YYYY-MM-DD HH:mm:ss`。runner 后续更新 `status.json` 时不得改变历史页使用的开始时间语义。
+- `GET /workbench/jobs?limit=12&page=...` 必须从 `FedVLR/outputs/workbench_jobs` 读取 job 档案，返回 `job_id`、`experiment_name`、`direction`、`dataset`、`model`、`execution_mode`、`source`、`status`、时间戳、`key_metrics` 和相对路径，不暴露本地绝对路径。列表必须排除 job_id 或名称包含 `test`、以 `codex_` 开头、或缺少可解析 `started_at` 的测试/残缺任务；保留任务严格按解析后的 `started_at` 降序排列，不能使用完成时间代替。
+- `/workbench/options` 必须保持 canonical：只返回 `AMAZON_BEAUTY_POC`、`KU` 两个启动数据集和 8 个可启动模型，同时返回 `common_parameters`、`fixed_parameters`、`direction_parameters`、`defense_parameters`、`model_dataset_execution`、`parameter_descriptors` 以及目标商品中文展示字段。标签、范围、步长、默认值和动态上限以 FedVLR schema 为唯一来源。
 - `/workbench/validate` 和 invalid `/workbench/jobs` 响应应保留 `field_errors`；`error_message` 要合并关键字段错误，方便前端展示启动失败原因。
-- `source=real_smoke` 只表示 FedVLR 白名单 1 epoch smoke 已执行；它不是长训练或完整 defense benchmark。当前真实 smoke 路径包括 Amazon Beauty + FedAvg 的推荐操纵 smoke，以及 KU + FedAvg/FedRAP 的聚合防御 smoke。
-- 复用既有 V3 证据时必须返回 `source=existing_artifact`；只有用户显式请求 `execution_mode=probe_smoke` 时才能返回 `source=probe_smoke`；用户请求 `real_smoke` 但组合不支持时必须返回校验失败原因，不能静默降级成 probe 或复用证据。聚合防御只有 config-only evidence 时可以返回 `partial`，不能伪造成完整 defense benchmark。
-- `/workbench/jobs/{job_id}` 状态应带回 `direction`、`dataset`、`model`、`execution_mode`、`requested_execution_mode` 和 config summary，方便前端区分复用证据、真实轻量 smoke 和 probe smoke。
+- `/workbench/validate` 和 `/workbench/jobs` 在字段缺失时默认补 `execution_mode=full_train`；显式提交旧模式必须校验失败，不能静默转换。
+- `/workbench/validate` 和 `/workbench/jobs` 固定 `top_k=50`，不得接受 UI 自定义 TopK。单次最多接受一个鲁棒聚合算法；空数组表示普通 FedAvg 聚合。Krum 校验 `krum_f`、`multi_krum_enabled`、`distance_metric`、`gradient_clip_norm`，Median 校验 `gradient_clip_norm` 和 `outlier_strategy`；`gradient_clip_norm` 与更新扰动层的 `max_grad_norm` 必须保持独立。Krum/Bulyan 的 `f` 与 TrimmedMean 最少保留客户端数必须按本轮采样客户端数动态校验，非法值通过 `field_errors` 返回。更新扰动层参数同样复用 schema descriptor，且不得写成 formal DP。
+- 新 job 只允许 `source=full_train`。不支持的方向、模型或数据集组合必须返回明确 `field_errors` / `error_message`，不能读取既有 artifact 或进入 probe 路径。
+- `/workbench/jobs/{job_id}` 状态应带回 `experiment_name`、metadata `started_at`、`direction`、`dataset`、`model`、`execution_mode`、`requested_execution_mode` 和 config summary；旧 job 字段只做读取兼容。
+- runner 启动后必须回传并持久化 `runner_pid`、训练子进程 `pid`、`subprocess_command`、`python_path`、`cwd`、`return_code`、`started_at` 和 `finished_at`。训练中日志接口要能读取持续追加的 stdout/stderr；非零退出必须保留 `failure_stage`、中文 `error_summary` 和完整 `error_detail`。
 - `job_id` 必须是安全路径片段，响应不要暴露本地绝对路径或私有运行参数。
 - Workbench 模型列表必须保持 MGCN 系列为 adapter-required，直到 FedVLR 侧有真实 trainer/import 验证。
