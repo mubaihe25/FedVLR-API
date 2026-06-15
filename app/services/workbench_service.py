@@ -26,6 +26,48 @@ WORKBENCH_DIRECTION_LABELS = {
     "aggregation_defense": "聚合防御",
 }
 
+# 运行时性能参数 — 收口为后端固定安全默认值。
+# 不再作为 Workbench 前端可编辑 / 可提交字段；旧 payload 传值会被覆盖。
+# 顺序与 FedVLR/configs/workbench_experiment_schema.json 的 runtime_parameters 收口策略保持一致。
+WORKBENCH_RUNTIME_LOCKED_KEYS = (
+    "num_workers",
+    "prefetch_factor",
+    "pin_memory",
+    "persistent_workers",
+    "amp_enabled",
+    "cache_item_features_on_device",
+    "non_blocking_transfer",
+    "reuse_client_model_workspace",
+)
+WORKBENCH_RUNTIME_SAFE_DEFAULTS: Dict[str, Any] = {
+    "num_workers": 0,
+    "prefetch_factor": None,
+    "pin_memory": False,
+    "persistent_workers": False,
+    "amp_enabled": False,
+    "cache_item_features_on_device": True,
+    "non_blocking_transfer": True,
+    "reuse_client_model_workspace": True,
+}
+
+
+def coerce_runtime_safety(payload: Dict[str, Any] | None) -> Dict[str, Any]:
+    """把工作台 payload 中的运行时性能参数统一收口为安全默认值。
+
+    - 不论调用方是否传了 8 个字段，全部覆盖为 ``WORKBENCH_RUNTIME_SAFE_DEFAULTS``；
+    - 即便旧前端或 curl 显式提交，模型/训练链路也只会读到安全值；
+    - 兼容驼峰 / 下划线 / 大小写变体。
+    """
+    if not isinstance(payload, dict):
+        return {}
+    for key in WORKBENCH_RUNTIME_LOCKED_KEYS:
+        camel = "".join(part.capitalize() if index else part for index, part in enumerate(key.split("_")))
+        for variant in (key, camel, camel.upper(), key.upper()):
+            if variant in payload:
+                payload.pop(variant, None)
+        payload[key] = WORKBENCH_RUNTIME_SAFE_DEFAULTS[key]
+    return payload
+
 
 class WorkbenchService:
     """Wrapper around FedVLR workbench full-training jobs.
@@ -326,8 +368,20 @@ class WorkbenchService:
             return {
                 key: value
                 for key, value in {
+                    "baseline_target_rank": metrics.get("baseline_target_rank", metrics.get("baseline_unmasked_rank")),
+                    "attack_target_rank": metrics.get("attack_target_rank", metrics.get("attack_unmasked_rank")),
+                    "defended_target_rank": metrics.get("defended_target_rank", metrics.get("defense_unmasked_rank")),
                     "rank_gain": metrics.get("rank_gain"),
-                    "attack_topk_hit": metrics.get("masked_top50_hit", metrics.get("attack_topk_hit")),
+                    "attack_top50_hit": metrics.get("attack_top50_hit", metrics.get("attack_topk_hit")),
+                    "defended_top50_hit": metrics.get("defended_top50_hit"),
+                    "final_top50_hit": metrics.get("masked_top50_hit"),
+                    "top50_hit_count": metrics.get("top50_hit_count", metrics.get("masked_top50_hit_count")),
+                    "top50_hit_rate": metrics.get("top50_hit_rate", metrics.get("masked_top50_hit_rate")),
+                    "audited_user_count": metrics.get("audited_user_count", metrics.get("evaluated_user_count")),
+                    "attack_vs_baseline_jaccard": metrics.get("attack_vs_baseline_jaccard"),
+                    "defense_vs_baseline_jaccard": metrics.get("defense_vs_baseline_jaccard"),
+                    "result_variant": metrics.get("result_variant"),
+                    "robust_aggregator": metrics.get("robust_aggregator"),
                     "target_manipulation_index": metrics.get("target_manipulation_index"),
                 }.items()
                 if value is not None
@@ -443,6 +497,12 @@ class WorkbenchService:
     def _validation_with_preflight(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         module = self._load_generator()
         normalized_payload = dict(payload)
+        # 运行时性能参数（num_workers / prefetch_factor / pin_memory /
+        # persistent_workers / amp_enabled / cache_item_features_on_device /
+        # non_blocking_transfer / reuse_client_model_workspace）已收口为
+        # WORKBENCH_RUNTIME_SAFE_DEFAULTS；忽略/覆盖旧 payload 里的任何值，
+        # 即便旧前端或 curl 显式提交也只会进安全值。
+        coerce_runtime_safety(normalized_payload)
         normalized_payload.setdefault("execution_mode", "full_train")
         response = module.validation_response(normalized_payload)
         response["source"] = "fedvlr_workbench_generator"
@@ -482,6 +542,23 @@ class WorkbenchService:
         module = self._load_generator()
         payload = module.get_workbench_options()
         payload["source"] = "fedvlr_workbench_schema"
+        # 运行时性能参数已收口为后端固定默认值，不再作为前端参数返回。
+        # 从 /workbench/options 的 parameter_descriptors / allowed_params /
+        # defaults 中剔除，避免旧前端 / 调试脚本误用。
+        parameter_descriptors = payload.get("parameter_descriptors")
+        if isinstance(parameter_descriptors, dict):
+            for key in WORKBENCH_RUNTIME_LOCKED_KEYS:
+                parameter_descriptors.pop(key, None)
+        allowed_params = payload.get("allowed_params")
+        if isinstance(allowed_params, list):
+            payload["allowed_params"] = [
+                item for item in allowed_params
+                if not (isinstance(item, str) and item in WORKBENCH_RUNTIME_LOCKED_KEYS)
+            ]
+        defaults = payload.get("defaults")
+        if isinstance(defaults, dict):
+            for key in WORKBENCH_RUNTIME_LOCKED_KEYS:
+                defaults.pop(key, None)
         return payload
 
     def validate(self, payload: Dict[str, Any]) -> Dict[str, Any]:
