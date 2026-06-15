@@ -55,11 +55,20 @@ python -m compileall -q app
 - 新 job 必须把点击“开始实验”时的 `started_at` 和规范中文 `experiment_name` 写入独立 `metadata.json`；名称格式为 `{推荐操纵|成员推断|更新泄露|聚合防御} · YYYY-MM-DD HH:mm:ss`。runner 后续更新 `status.json` 时不得改变历史页使用的开始时间语义。
 - `GET /workbench/jobs?limit=12&page=...` 必须从 `FedVLR/outputs/workbench_jobs` 读取 job 档案，返回 `job_id`、`experiment_name`、`direction`、`dataset`、`model`、`execution_mode`、`source`、`status`、时间戳、`key_metrics` 和相对路径，不暴露本地绝对路径。列表必须排除 job_id 或名称包含 `test`、以 `codex_` 开头、或缺少可解析 `started_at` 的测试/残缺任务；保留任务严格按解析后的 `started_at` 降序排列，不能使用完成时间代替。
 - `/workbench/options` 必须保持 canonical：只返回 `AMAZON_BEAUTY_POC`、`KU` 两个启动数据集和 8 个可启动模型，同时返回 `common_parameters`、`fixed_parameters`、`direction_parameters`、`defense_parameters`、`model_dataset_execution`、`parameter_descriptors` 以及目标商品中文展示字段。标签、范围、步长、默认值和动态上限以 FedVLR schema 为唯一来源。
-- `/workbench/validate` 和 invalid `/workbench/jobs` 响应应保留 `field_errors`；`error_message` 要合并关键字段错误，方便前端展示启动失败原因。
+- `/workbench/validate` 和 invalid `/workbench/jobs` 响应应保留 `field_errors`；`error_message` 要合并关键字段错误，方便前端展示启动失败原因。基础 schema 通过后必须调用 FedVLR `.venv` 中的 `scripts/workbench_forward_preflight.py`，真实最小 forward 未通过时不得创建 job。
 - `/workbench/validate` 和 `/workbench/jobs` 在字段缺失时默认补 `execution_mode=full_train`；显式提交旧模式必须校验失败，不能静默转换。
 - `/workbench/validate` 和 `/workbench/jobs` 固定 `top_k=50`，不得接受 UI 自定义 TopK。单次最多接受一个鲁棒聚合算法；空数组表示普通 FedAvg 聚合。Krum 校验 `krum_f`、`multi_krum_enabled`、`distance_metric`、`gradient_clip_norm`，Median 校验 `gradient_clip_norm` 和 `outlier_strategy`；`gradient_clip_norm` 与更新扰动层的 `max_grad_norm` 必须保持独立。Krum/Bulyan 的 `f` 与 TrimmedMean 最少保留客户端数必须按本轮采样客户端数动态校验，非法值通过 `field_errors` 返回。更新扰动层参数同样复用 schema descriptor，且不得写成 formal DP。
 - 新 job 只允许 `source=full_train`。不支持的方向、模型或数据集组合必须返回明确 `field_errors` / `error_message`，不能读取既有 artifact 或进入 probe 路径。
 - `/workbench/jobs/{job_id}` 状态应带回 `experiment_name`、metadata `started_at`、`direction`、`dataset`、`model`、`execution_mode`、`requested_execution_mode` 和 config summary；旧 job 字段只做读取兼容。
-- runner 启动后必须回传并持久化 `runner_pid`、训练子进程 `pid`、`subprocess_command`、`python_path`、`cwd`、`return_code`、`started_at` 和 `finished_at`。训练中日志接口要能读取持续追加的 stdout/stderr；非零退出必须保留 `failure_stage`、中文 `error_summary` 和完整 `error_detail`。
+- runner 启动后必须回传并持久化 `runner_pid`、训练子进程 `pid`、`subprocess_command`、`python_path`、`cwd`、`return_code`、`started_at` 和 `finished_at`。训练中日志接口要能读取持续追加的 stdout/stderr；非零退出必须保留 `failure_stage`、中文 `error_summary`、完整 `error_detail`、实际 tensor shape 和模型期望 shape。
+- `/workbench/jobs/{job_id}` 与 `/result` 必须透传 `progress_detail`、`epoch_metrics`、`gpu_stats` 和 `performance_summary`。进度只能读取真实 `progress.json`；文件尚未出现时返回初始化状态，不得根据时间或轮数伪造百分比。
+- `progress_detail` 保留阶段、中文阶段名、epoch/client 计数、完成客户端数、百分比、elapsed、ETA 和更新时间。completed 才归一到 100%；failed 保留失败时百分比和 `failure_phase`。
+- `gpu_stats.csv` 或性能遥测缺失只表示遥测不可用，不能改变训练终态。所有新增性能和进度响应继续执行绝对路径清洗。
 - `job_id` 必须是安全路径片段，响应不要暴露本地绝对路径或私有运行参数。
 - Workbench 模型列表必须保持 MGCN 系列为 adapter-required，直到 FedVLR 侧有真实 trainer/import 验证。
+- `/workbench/jobs/{job_id}/result` 必须兼容旧 job，并对新 job 返回 `workbench-result-v2` 的 `training`、`direction_result`、`warnings`、`missing_evidence`、失败阶段和错误。不得把当前 job 与 showcase/V3 或其他 job 拼接。
+- 历史 `key_metrics` 必须按方向映射：推荐操纵 rank/Top50，成员推断 AUC/Accuracy，更新泄露 Hit@10/20/50，聚合防御 defended Recall/NDCG、恢复率和拒绝数。
+- 结果、状态和日志响应不得暴露 D 盘绝对路径或 runner 私有命令。商品图片字段保持 `/showcase/images/{datasetId}/{itemId}?size=thumb`，大型明细需保留 total/returned/truncated 语义。
+- `partial` 只表示训练完成但方向证据缺失，必须返回具体 `missing_evidence`；普通验证 warning 不得自动降级终态。
+- `model_dataset_execution` 必须区分 `construct_verified`、`forward_verified`、`train_verified`、`direction_verified`。构造成功不等于允许训练；API 以当前真实 preflight 结果作为启动门槛，只有真实完成 job 才能提升 train/direction 证据。
+- checkpoint 字段在没有明确 strict compatible loader 时必须校验失败，不能静默忽略或加载维度不兼容权重。

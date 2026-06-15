@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
+import csv
 import json
 import os
 import re
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -37,7 +40,9 @@ class WorkbenchService:
         self.output_root = (settings.fedvlr_root / "outputs" / "workbench_jobs").resolve()
         self.generator_path = (settings.fedvlr_root / "scripts" / "generate_workbench_smoke_config.py").resolve()
         self.runner_path = (settings.fedvlr_root / "scripts" / "run_workbench_smoke_job.py").resolve()
+        self.preflight_path = (settings.fedvlr_root / "scripts" / "workbench_forward_preflight.py").resolve()
         self._module: ModuleType | None = None
+        self._preflight_cache: Dict[str, tuple[float, Dict[str, Any]]] = {}
 
     def _load_generator(self) -> ModuleType:
         if self._module is not None:
@@ -106,6 +111,7 @@ class WorkbenchService:
             return None
 
     def _job_config_summary(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        defense = config.get("defense") if isinstance(config.get("defense"), dict) else {}
         return {
             "model": config.get("model"),
             "dataset": config.get("dataset"),
@@ -115,7 +121,169 @@ class WorkbenchService:
             "aggregation_mode": config.get("aggregation_mode"),
             "robust_aggregators": config.get("robust_aggregators", []),
             "dp_noise_enabled": config.get("dp_noise_enabled"),
+            "base_attack": defense.get("base_attack"),
+            "defense_algorithm": (config.get("robust_aggregators") or [None])[0],
         }
+
+    def _read_progress(self, job_dir: Path, status: Dict[str, Any]) -> Dict[str, Any] | None:
+        progress_path = job_dir / "progress.json"
+        progress = self._read_json(progress_path) if progress_path.exists() else None
+        if not isinstance(progress, dict):
+            if status.get("status") in {"completed", "partial"}:
+                return {
+                    "phase": "completed",
+                    "phase_label": "实验完成",
+                    "current_epoch": 0,
+                    "total_epochs": 0,
+                    "current_client": 0,
+                    "total_clients": 0,
+                    "completed_clients": 0,
+                    "percent": 100.0,
+                    "updated_at": status.get("updated_at"),
+                    "elapsed_seconds": None,
+                    "estimated_remaining_seconds": 0,
+                }
+            return None
+        progress.pop("started_timestamp", None)
+        if status.get("status") in {"completed", "partial"}:
+            progress["percent"] = 100.0
+            progress["phase"] = "completed"
+            progress["phase_label"] = "实验完成"
+            progress["estimated_remaining_seconds"] = 0
+        elif status.get("status") == "failed":
+            progress["failure_phase"] = status.get("failure_stage") or progress.get("phase")
+            progress["phase"] = "failed"
+            progress["phase_label"] = "实验失败"
+            progress["estimated_remaining_seconds"] = None
+        return progress
+
+    def _read_gpu_stats(self, job_dir: Path, limit: int = 60) -> Dict[str, Any]:
+        path = job_dir / "gpu_stats.csv"
+        if not path.exists():
+            return {"available": False, "samples": [], "latest": None}
+        try:
+            with path.open("r", encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+        except (OSError, csv.Error):
+            return {"available": False, "samples": [], "latest": None}
+        samples = []
+        for row in rows[-max(1, min(limit, 300)):]:
+            try:
+                samples.append(
+                    {
+                        "timestamp": row.get("timestamp"),
+                        "utilization_gpu": float(row["utilization_gpu"]),
+                        "memory_used": float(row["memory_used"]),
+                        "memory_total": float(row["memory_total"]),
+                        "power_draw": float(row["power_draw"]),
+                        "temperature": float(row["temperature"]),
+                    }
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+        return {"available": bool(samples), "samples": samples, "latest": samples[-1] if samples else None}
+
+    def _read_epoch_metrics(self, job_dir: Path) -> Dict[str, Any]:
+        path = job_dir / "epoch_metrics.json"
+        payload = self._read_json(path) if path.exists() else {}
+        if not isinstance(payload, dict):
+            return {}
+        return {
+            str(phase): records
+            for phase, records in payload.items()
+            if isinstance(records, list)
+        }
+
+    def _shape_failure_fields(self, status: Dict[str, Any]) -> Dict[str, Any]:
+        actual = status.get("actual_tensor_shapes") or status.get("actual_tensor_shape")
+        expected = status.get("model_expected_shapes") or status.get("model_expected_shape")
+        detail = str(status.get("error_detail") or status.get("error_summary") or "")
+        if actual is None:
+            match = re.search(r"actual_tensor_shape=([^;\n]+)", detail)
+            if match:
+                actual = match.group(1).strip()
+        if expected is None:
+            match = re.search(r"model_expected_shape=([^;\n]+)", detail)
+            if match:
+                expected = match.group(1).strip()
+        if actual is None or expected is None:
+            match = re.search(
+                r"mat1 and mat2 shapes cannot be multiplied \((\d+)x(\d+) and (\d+)x(\d+)\)",
+                detail,
+            )
+            if match:
+                actual = actual or f"({match.group(1)}, {match.group(2)})"
+                expected = expected or f"(*, {match.group(3)})"
+        return {
+            "actual_tensor_shapes": actual,
+            "model_expected_shapes": expected,
+        }
+
+    def _safe_relative_string(self, value: str) -> str | None:
+        root_text = str(self.settings.fedvlr_root)
+        value = value.replace(root_text, ".").replace(root_text.replace("\\", "/"), ".")
+        normalized = value.replace("\\", "/")
+        if re.match(r"^[A-Za-z]:/", normalized) or normalized.startswith("//"):
+            try:
+                return Path(value).resolve().relative_to(self.settings.fedvlr_root).as_posix()
+            except (ValueError, OSError):
+                return None
+        return re.sub(r"[A-Za-z]:[/\\][^\s\"']+", "<local-path>", value)
+
+    def _sanitize_payload(self, value: Any, *, key: str = "") -> Any:
+        if isinstance(value, dict):
+            sanitized: Dict[str, Any] = {}
+            for child_key, child_value in value.items():
+                cleaned = self._sanitize_payload(child_value, key=str(child_key))
+                if cleaned is not None or child_value is None:
+                    sanitized[str(child_key)] = cleaned
+            return sanitized
+        if isinstance(value, list):
+            limits = {
+                "candidates": 50,
+                "candidate_scores": 50,
+                "roc_curve": 200,
+                "rounds": 100,
+                "rejected_client_ids": 100,
+            }
+            limit = limits.get(key, 500)
+            return [self._sanitize_payload(item, key=key) for item in value[:limit]]
+        if isinstance(value, str):
+            return self._safe_relative_string(value)
+        return value
+
+    def _normalize_result(self, job_id: str, status: Dict[str, Any], metrics: Dict[str, Any] | None) -> Dict[str, Any] | None:
+        if not isinstance(metrics, dict):
+            return None
+        if metrics.get("schema_version") == "workbench-result-v2":
+            return self._sanitize_payload(metrics)
+        legacy_metrics = metrics.get("metrics") if isinstance(metrics.get("metrics"), dict) else {}
+        direction = metrics.get("direction") or status.get("direction")
+        normalized = {
+            "schema_version": "workbench-result-v2",
+            "job_id": job_id,
+            "direction": direction,
+            "dataset": metrics.get("dataset") or legacy_metrics.get("dataset"),
+            "model": metrics.get("model") or legacy_metrics.get("model"),
+            "status": metrics.get("status") or status.get("status"),
+            "source": metrics.get("source") or status.get("source"),
+            "started_at": status.get("started_at") or status.get("created_at"),
+            "finished_at": status.get("finished_at"),
+            "config_summary": {},
+            "training": {
+                "loss": legacy_metrics.get("loss"),
+                "recall_at_50": legacy_metrics.get("recall_at_50"),
+                "ndcg_at_50": legacy_metrics.get("ndcg_at_50"),
+                "epochs": legacy_metrics.get("epochs"),
+                "rounds": [],
+            },
+            "direction_result": legacy_metrics,
+            "metrics": legacy_metrics,
+            "warnings": metrics.get("warnings", []),
+            "missing_evidence": [],
+            "partial_reason": metrics.get("partial_reason"),
+        }
+        return self._sanitize_payload(normalized)
 
     def _date_matches(self, value: str | None, date_from: str = "", date_to: str = "") -> bool:
         if not value:
@@ -149,9 +317,45 @@ class WorkbenchService:
     def _compact_metrics(self, metrics_summary: Dict[str, Any] | None) -> Dict[str, Any]:
         if not isinstance(metrics_summary, dict):
             return {}
-        metrics = metrics_summary.get("metrics")
+        direction = str(metrics_summary.get("direction") or "")
+        direction_result = metrics_summary.get("direction_result")
+        metrics = direction_result if isinstance(direction_result, dict) else metrics_summary.get("metrics")
         if not isinstance(metrics, dict):
             metrics = metrics_summary
+        if direction == "recommendation_manipulation":
+            return {
+                key: value
+                for key, value in {
+                    "rank_gain": metrics.get("rank_gain"),
+                    "attack_topk_hit": metrics.get("masked_top50_hit", metrics.get("attack_topk_hit")),
+                    "target_manipulation_index": metrics.get("target_manipulation_index"),
+                }.items()
+                if value is not None
+            }
+        if direction == "membership_inference":
+            return {key: value for key, value in {"auc": metrics.get("auc"), "accuracy": metrics.get("accuracy")}.items() if value is not None}
+        if direction == "update_leakage":
+            return {
+                key: value
+                for key, value in {
+                    "hit_at_10": metrics.get("hit_at_10"),
+                    "hit_at_20": metrics.get("hit_at_20"),
+                    "hit_at_50": metrics.get("hit_at_50"),
+                }.items()
+                if value is not None
+            }
+        if direction == "aggregation_defense":
+            defended = metrics.get("defended") if isinstance(metrics.get("defended"), dict) else {}
+            return {
+                key: value
+                for key, value in {
+                    "defended_recall_at_50": defended.get("recall_at_50", metrics.get("defended_recall_at_50")),
+                    "defended_ndcg_at_50": defended.get("ndcg_at_50", metrics.get("defended_ndcg_at_50")),
+                    "recovery_rate_recall": metrics.get("recovery_rate_recall"),
+                    "rejected_client_count": metrics.get("rejected_client_count"),
+                }.items()
+                if value is not None
+            }
         keep = [
             "baseline_unmasked_rank",
             "attack_unmasked_rank",
@@ -191,6 +395,89 @@ class WorkbenchService:
             return venv_python
         return sys.executable
 
+    def _preflight_cache_key(self, payload: Dict[str, Any]) -> str:
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _run_forward_preflight(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.preflight_path.exists():
+            raise FileNotFoundError("FedVLR forward preflight is missing")
+        cache_key = self._preflight_cache_key(payload)
+        cached = self._preflight_cache.get(cache_key)
+        if cached and time.monotonic() - cached[0] <= 300:
+            return dict(cached[1])
+        command = [
+            str(self._workbench_python()),
+            str(self.preflight_path),
+            "--stdin",
+        ]
+        completed = subprocess.run(  # noqa: S603 - fixed Python executable and whitelisted preflight path.
+            command,
+            cwd=str(self.settings.fedvlr_root),
+            input=json.dumps(payload, ensure_ascii=False),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=180,
+            check=False,
+        )
+        stdout_lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+        try:
+            result = json.loads(stdout_lines[-1]) if stdout_lines else {}
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"FedVLR forward preflight returned invalid JSON: {completed.stderr.strip()}"
+            ) from exc
+        if not isinstance(result, dict):
+            raise RuntimeError("FedVLR forward preflight returned a non-object response")
+        result.setdefault("return_code", completed.returncode)
+        if completed.returncode != 0:
+            result["valid"] = False
+            result.setdefault("failure_stage", "forward_preflight")
+            result.setdefault("error_summary", "真实最小 forward 预检失败。")
+            result.setdefault("error_detail", completed.stderr.strip() or completed.stdout.strip())
+        self._preflight_cache[cache_key] = (time.monotonic(), dict(result))
+        return result
+
+    def _validation_with_preflight(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        module = self._load_generator()
+        normalized_payload = dict(payload)
+        normalized_payload.setdefault("execution_mode", "full_train")
+        response = module.validation_response(normalized_payload)
+        response["source"] = "fedvlr_workbench_generator"
+        if not response.get("valid"):
+            return response
+
+        preflight = self._run_forward_preflight(normalized_payload)
+        response["forward_preflight"] = preflight
+        if preflight.get("valid"):
+            normalized_config = response.get("normalized_config")
+            if isinstance(normalized_config, dict):
+                capability = normalized_config.get("execution_capability")
+                if isinstance(capability, dict):
+                    capability.update(preflight.get("verification") or {})
+            return response
+
+        response["valid"] = False
+        response["status"] = "invalid"
+        response["launch_enabled"] = False
+        preflight_errors = [str(item) for item in preflight.get("errors") or []]
+        response["errors"] = list(dict.fromkeys([*(response.get("errors") or []), *preflight_errors]))
+        field_errors = dict(response.get("field_errors") or {})
+        for field, messages in (preflight.get("field_errors") or {}).items():
+            field_errors.setdefault(field, []).extend(str(item) for item in messages)
+            field_errors[field] = list(dict.fromkeys(field_errors[field]))
+        response["field_errors"] = field_errors
+        response["failure_stage"] = preflight.get("failure_stage") or "forward_preflight"
+        response["error_summary"] = preflight.get("error_summary") or "真实最小 forward 预检失败。"
+        response["error_detail"] = preflight.get("error_detail")
+        response["actual_tensor_shapes"] = preflight.get("actual_tensor_shapes")
+        response["model_expected_shapes"] = preflight.get("model_expected_shapes")
+        response["return_code"] = preflight.get("return_code")
+        response["error_message"] = response["error_summary"]
+        return response
+
     def options(self) -> Dict[str, Any]:
         module = self._load_generator()
         payload = module.get_workbench_options()
@@ -198,12 +485,7 @@ class WorkbenchService:
         return payload
 
     def validate(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        module = self._load_generator()
-        normalized_payload = dict(payload)
-        normalized_payload.setdefault("execution_mode", "full_train")
-        response = module.validation_response(normalized_payload)
-        response["source"] = "fedvlr_workbench_generator"
-        return response
+        return self._validation_with_preflight(payload)
 
     def create_job(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         module = self._load_generator()
@@ -212,8 +494,7 @@ class WorkbenchService:
 
         normalized_payload = dict(payload)
         normalized_payload.setdefault("execution_mode", "full_train")
-        response = module.validation_response(normalized_payload)
-        response["source"] = "fedvlr_workbench_generator"
+        response = self._validation_with_preflight(normalized_payload)
         if not response.get("valid"):
             field_messages = []
             field_errors = response.get("field_errors") or {}
@@ -268,6 +549,7 @@ class WorkbenchService:
                 "cwd": str(self.settings.fedvlr_root),
                 "warnings": response.get("warnings", []),
                 "errors": [],
+                "forward_preflight": response.get("forward_preflight"),
             },
         )
         (job_dir / "run.log").write_text(f"[{created_at}] Workbench job {job_id} queued by API.\n", encoding="utf-8")
@@ -336,11 +618,17 @@ class WorkbenchService:
         config = self._read_json(job_dir / "config.json") if (job_dir / "config.json").exists() else {}
         metadata = self._read_job_metadata(job_dir)
         config_summary = self._job_config_summary(config)
+        shape_fields = self._shape_failure_fields(status)
+        progress_detail = self._read_progress(job_dir, status)
+        epoch_metrics = self._read_epoch_metrics(job_dir)
+        performance_summary = self._read_json(job_dir / "performance_summary.json") if (job_dir / "performance_summary.json").exists() else None
+        gpu_stats = self._read_gpu_stats(job_dir)
         return {
             "job_id": job_id,
             "status": status.get("status"),
-            "stage": status.get("stage"),
-            "progress": status.get("progress"),
+            "stage": (progress_detail or {}).get("phase") or status.get("stage"),
+            "progress": (progress_detail or {}).get("percent"),
+            "progress_detail": progress_detail,
             "valid": status.get("valid"),
             "created_at": status.get("created_at"),
             "updated_at": status.get("updated_at"),
@@ -356,20 +644,25 @@ class WorkbenchService:
             "message": status.get("message"),
             "error_message": status.get("error_message"),
             "error_summary": status.get("error_summary"),
-            "error_detail": status.get("error_detail"),
+            "error_detail": self._safe_relative_string(str(status.get("error_detail"))) if status.get("error_detail") else None,
             "failure_stage": status.get("failure_stage"),
             "runner_pid": status.get("runner_pid"),
             "pid": status.get("pid"),
             "return_code": status.get("return_code"),
-            "subprocess_command": status.get("subprocess_command"),
-            "python_path": status.get("python_path"),
-            "cwd": status.get("cwd"),
+            "subprocess_command": None,
+            "python_path": Path(str(status.get("python_path"))).name if status.get("python_path") else None,
+            "cwd": "." if status.get("cwd") else None,
             "result_dir": status.get("result_dir"),
             "artifact_dir": status.get("artifact_dir"),
             "source": status.get("source"),
             "warnings": status.get("warnings", []),
             "errors": status.get("errors", []),
             "config_summary": config_summary,
+            "forward_preflight": status.get("forward_preflight"),
+            "epoch_metrics": epoch_metrics,
+            "gpu_stats": gpu_stats,
+            "performance_summary": performance_summary,
+            **shape_fields,
         }
 
     def list_jobs(
@@ -423,11 +716,13 @@ class WorkbenchService:
                 "finished_at": status_payload.get("finished_at"),
                 "failure_stage": status_payload.get("failure_stage"),
                 "error_summary": status_payload.get("error_summary"),
-                "error_detail": status_payload.get("error_detail"),
+                "error_detail": self._safe_relative_string(str(status_payload.get("error_detail"))) if status_payload.get("error_detail") else None,
                 "return_code": status_payload.get("return_code"),
                 "key_metrics": self._compact_metrics(metrics_summary),
                 "result_dir": status_payload.get("result_dir"),
                 "artifact_dir": status_payload.get("artifact_dir"),
+                "forward_preflight": status_payload.get("forward_preflight"),
+                **self._shape_failure_fields(status_payload),
             }
             if direction and item["direction"] != direction:
                 continue
@@ -472,7 +767,7 @@ class WorkbenchService:
         return {
             "job_id": job_id,
             "tail": bounded_tail,
-            "lines": lines[-bounded_tail:],
+            "lines": [self._safe_relative_string(line) or "" for line in lines[-bounded_tail:]],
             "has_more": len(lines) > bounded_tail,
         }
 
@@ -481,13 +776,27 @@ class WorkbenchService:
         status = self._read_json(job_dir / "status.json")
         pointer = self._read_json(job_dir / "result_pointer.json") if (job_dir / "result_pointer.json").exists() else None
         metrics = self._read_json(job_dir / "metrics_summary.json") if (job_dir / "metrics_summary.json").exists() else None
+        normalized = self._normalize_result(job_id, status, metrics)
+        progress_detail = self._read_progress(job_dir, status)
         return {
             "job_id": job_id,
             "status": (pointer or {}).get("status") or status.get("status"),
             "stage": status.get("stage"),
             "source": (pointer or {}).get("source") or status.get("source"),
-            "result_pointer": pointer,
-            "metrics_summary": metrics,
+            "result_pointer": self._sanitize_payload(pointer),
+            "metrics_summary": normalized,
+            "result": normalized,
+            "warnings": (normalized or {}).get("warnings", status.get("warnings", [])),
+            "missing_evidence": (normalized or {}).get("missing_evidence", []),
+            "failure_stage": status.get("failure_stage"),
+            "error_summary": status.get("error_summary") or status.get("error_message"),
+            "error_detail": self._safe_relative_string(str(status.get("error_detail"))) if status.get("error_detail") else None,
+            "actual_tensor_shapes": self._shape_failure_fields(status).get("actual_tensor_shapes"),
+            "model_expected_shapes": self._shape_failure_fields(status).get("model_expected_shapes"),
+            "progress_detail": progress_detail,
+            "epoch_metrics": self._read_epoch_metrics(job_dir),
+            "gpu_stats": self._read_gpu_stats(job_dir),
+            "performance_summary": self._read_json(job_dir / "performance_summary.json") if (job_dir / "performance_summary.json").exists() else None,
             "message": "结果来自真实全量训练任务。",
         }
 
