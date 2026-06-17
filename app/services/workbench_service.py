@@ -709,7 +709,7 @@ class WorkbenchService:
             "valid": status.get("valid"),
             "created_at": status.get("created_at"),
             "updated_at": status.get("updated_at"),
-            "started_at": metadata.get("started_at") or status.get("started_at"),
+            "started_at": metadata.get("started_at") or status.get("started_at") or status.get("created_at"),
             "finished_at": status.get("finished_at"),
             "experiment_name": metadata.get("experiment_name") or status.get("experiment_name"),
             "direction": status.get("direction"),
@@ -774,7 +774,7 @@ class WorkbenchService:
             metrics_summary = self._read_json(job_dir / "metrics_summary.json") if (job_dir / "metrics_summary.json").exists() else {}
             job_id = str(status_payload.get("job_id") or job_dir.name)
             experiment_name = metadata.get("experiment_name") or status_payload.get("experiment_name")
-            started_at = metadata.get("started_at") or status_payload.get("started_at")
+            started_at = metadata.get("started_at") or status_payload.get("started_at") or status_payload.get("created_at")
             parsed_started_at = self._parse_job_started_at(started_at)
             if self._is_test_job(job_id, experiment_name) or parsed_started_at is None:
                 continue
